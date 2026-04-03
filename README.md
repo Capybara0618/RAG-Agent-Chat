@@ -1,0 +1,76 @@
+﻿# KnowledgeOps Copilot
+
+KnowledgeOps Copilot 是一个可审计的 `RAG + Agent` 智能知识平台，目标不是做一个普通聊天机器人，而是做一个更像真实 AI 应用的完整系统。它面向实习求职场景设计，把文档接入、混合检索、Agent 编排、引用校验、反馈闭环和离线评测串成同一条完整链路。
+
+## 项目能展示什么
+
+- 面向企业知识场景的文档接入，支持 PDF、DOCX、Markdown、FAQ CSV 和网页文本
+- 混合检索能力，包括关键词匹配、向量式表示、重排和上下文压缩
+- 一个包含 5 个节点的 Agent 工作流：`Intent Router`、`Retrieval Planner`、`Tool Executor`、`Answer Composer`、`Citation Verifier`
+- 带引用、置信度、`trace_id` 和角色权限控制的可审计回答
+- 面向管理和分析的可观测能力：知识源管理、检索追踪、离线评测、反馈收集
+- 一个可直接拿来演示的 Streamlit 控制台
+
+## 技术栈
+
+- 后端：FastAPI、SQLAlchemy
+- Agent 编排：LangGraph，带本地 fallback runner
+- 存储：默认使用 SQLite，方便本地零门槛运行，同时保留迁移到 PostgreSQL 的空间
+- 检索：混合检索 + 确定性 embedding
+- 前端：Streamlit
+
+## 快速开始
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e .[dev]
+uvicorn app.main:app --reload
+streamlit run frontend/app.py
+```
+
+## 小白学习入口
+
+如果你是从零开始学习这个项目，建议先看这里：
+
+- [learning-path.md](D:/Code/RAG+Agent项目/docs/learning-path.md)
+
+推荐顺序：
+
+1. 先看本 README 和 [architecture.md](D:/Code/RAG+Agent项目/docs/architecture.md)，理解项目故事和总流程
+2. 再看 [main.py](D:/Code/RAG+Agent项目/app/main.py)，理解系统是怎么组装起来的
+3. 然后顺着一次请求追 [chat.py](D:/Code/RAG+Agent项目/app/api/routes/chat.py)、[service.py](D:/Code/RAG+Agent项目/app/services/agent/service.py)、[workflow.py](D:/Code/RAG+Agent项目/app/services/agent/workflow.py)
+4. 再看检索模块 [service.py](D:/Code/RAG+Agent项目/app/services/retrieval/service.py)
+5. 最后看知识接入模块 [service.py](D:/Code/RAG+Agent项目/app/services/ingestion/service.py)
+
+第一阶段的学习目标很简单：先能清楚讲明白“一次请求从哪里来、经过哪里、最后返回什么”，再去追更细的实现细节。
+
+## 核心 API 端点
+
+- `POST /knowledge/upload`
+- `POST /knowledge/reindex`
+- `GET /knowledge/sources`
+- `POST /chat/query`
+- `GET /chat/sessions/{session_id}`
+- `POST /chat/feedback`
+- `GET /trace/{trace_id}`
+- `POST /eval/run`
+- `GET /eval/runs/{run_id}`
+
+## 推荐演示流程
+
+1. 先上传 `data/` 目录下的样例知识文件
+2. 提一个对比类问题，例如“onboarding requirements 和 remote access policy 有什么区别？”
+3. 在管理页打开返回的 `trace_id`，展示检索和引用校验的过程
+4. 跑一次离线评测，讲解召回率、引用覆盖率和失败样本
+
+## 简历可用表述
+
+- 构建了一个面向企业知识场景的 `RAG + Agent` 智能平台，覆盖文档接入、混合检索、引用式回答、角色权限控制和离线评测
+- 设计并实现了一个 5 阶段 `LangGraph` 工作流，用于任务路由、检索规划、工具执行、答案生成和引用校验
+- 实现了带 `trace_id` 的可追踪 AI 回答机制，并支持检索观测、用户反馈收集和失败样本分析
+
+## 说明
+
+- 项目默认内置了确定性本地 fallback 模型，因此即使没有外部 API Key，也可以演示主流程
+- 如果想把它进一步升级成更强的求职项目，可以继续接入 OpenAI 兼容模型接口、切换到 PostgreSQL + pgvector，并连接真实企业知识源
