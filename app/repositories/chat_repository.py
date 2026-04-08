@@ -1,8 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import json
 import uuid
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import ChatMessage, ChatSession, Feedback, TraceRecord, TraceStep
@@ -58,7 +60,9 @@ class ChatRepository:
                     trace_id=trace_id,
                     node_name=str(step["node_name"]),
                     input_summary=str(step.get("input_summary", "")),
-                    output_summary=str(step.get("output_summary", "")),
+                    output_summary=json.dumps(step.get("output_summary", ""), ensure_ascii=False)
+                    if isinstance(step.get("output_summary", ""), (dict, list))
+                    else str(step.get("output_summary", "")),
                     latency_ms=float(step.get("latency_ms", 0.0)),
                     success=bool(step.get("success", True)),
                 )
@@ -74,6 +78,7 @@ class ChatRepository:
         next_action: str,
         confidence: float,
         final_answer: str,
+        debug_summary: dict[str, object] | None = None,
     ) -> None:
         trace = db.get(TraceRecord, trace_id)
         if trace is None:
@@ -82,6 +87,7 @@ class ChatRepository:
         trace.next_action = next_action
         trace.confidence = confidence
         trace.final_answer = final_answer
+        trace.debug_summary_json = json.dumps(debug_summary or {}, ensure_ascii=False)
         db.flush()
 
     def get_trace(self, db: Session, trace_id: str) -> tuple[TraceRecord | None, list[TraceStep]]:
@@ -90,6 +96,51 @@ class ChatRepository:
             return None, []
         statement = select(TraceStep).where(TraceStep.trace_id == trace_id).order_by(TraceStep.created_at.asc())
         return trace, list(db.scalars(statement))
+
+    def search_traces(
+        self,
+        db: Session,
+        *,
+        intent: str | None = None,
+        next_action: str | None = None,
+        user_role: str | None = None,
+        failed_only: bool = False,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        limit: int = 50,
+    ) -> list[tuple[TraceRecord, bool]]:
+        statement = select(TraceRecord).order_by(TraceRecord.created_at.desc()).limit(limit)
+        conditions = []
+        if intent:
+            conditions.append(TraceRecord.intent == intent)
+        if next_action:
+            conditions.append(TraceRecord.next_action == next_action)
+        if user_role:
+            conditions.append(TraceRecord.user_role == user_role)
+        if created_after:
+            conditions.append(TraceRecord.created_at >= created_after)
+        if created_before:
+            conditions.append(TraceRecord.created_at <= created_before)
+        if failed_only:
+            failing_steps = exists(
+                select(TraceStep.id).where(and_(TraceStep.trace_id == TraceRecord.trace_id, TraceStep.success.is_(False)))
+            )
+            conditions.append((TraceRecord.next_action != "answer") | failing_steps)
+        if conditions:
+            statement = statement.where(*conditions)
+
+        traces = list(db.scalars(statement))
+        results: list[tuple[TraceRecord, bool]] = []
+        for trace in traces:
+            has_failure = trace.next_action != "answer" or bool(
+                db.scalar(
+                    select(TraceStep.id).where(
+                        and_(TraceStep.trace_id == trace.trace_id, TraceStep.success.is_(False))
+                    )
+                )
+            )
+            results.append((trace, has_failure))
+        return results
 
     def add_feedback(
         self,
@@ -102,6 +153,16 @@ class ChatRepository:
         comment: str,
         include_in_eval: bool,
     ) -> Feedback:
+        trace = db.get(TraceRecord, trace_id)
+        candidate_case = {}
+        if trace is not None:
+            candidate_case = {
+                "question": trace.query,
+                "expected_answer": corrected_answer or trace.final_answer,
+                "task_type": trace.intent or "qa",
+                "required_role": trace.user_role,
+                "trace_id": trace_id,
+            }
         feedback = Feedback(
             session_id=session_id,
             trace_id=trace_id,
@@ -109,6 +170,8 @@ class ChatRepository:
             corrected_answer=corrected_answer,
             comment=comment,
             include_in_eval=include_in_eval,
+            review_status="pending" if include_in_eval else "ignored",
+            candidate_case_json=json.dumps(candidate_case, ensure_ascii=False),
         )
         db.add(feedback)
         db.flush()

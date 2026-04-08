@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 
@@ -22,6 +22,7 @@ class QueryResponse(BaseModel):
     trace_id: str
     next_action: str
     intent: str
+    debug_summary: dict[str, object] = Field(default_factory=dict)
 
 
 class ChatMessageRead(BaseModel):

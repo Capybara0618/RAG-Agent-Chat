@@ -2,12 +2,13 @@
 
 import json
 import uuid
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.chat import ChatMessageRead, FeedbackCreate, FeedbackRead, QueryRequest, QueryResponse, SessionRead
-from app.schemas.trace import TraceRead
+from app.schemas.trace import TraceRead, TraceSearchResult
 from app.services.agent.llm import LLMClient
 from app.services.agent.workflow import KnowledgeGraphBuilder
 from app.services.retrieval.service import RetrievalService
@@ -47,6 +48,7 @@ class KnowledgeOpsAgentService:
 
         citations = [citation.model_dump() for citation in state.get("citations", [])]
         final_answer = str(state.get("final_answer", state.get("draft_answer", "")))
+        debug_summary = dict(state.get("debug_summary", {}))
         self.chat_repository.add_trace_steps(db, trace_id, list(state.get("trace_steps", [])))
         self.chat_repository.finalize_trace(
             db,
@@ -55,6 +57,7 @@ class KnowledgeOpsAgentService:
             next_action=str(state.get("next_action", "answer")),
             confidence=float(state.get("confidence", 0.0)),
             final_answer=final_answer,
+            debug_summary=debug_summary,
         )
         self.chat_repository.add_message(
             db,
@@ -74,6 +77,7 @@ class KnowledgeOpsAgentService:
             trace_id=trace_id,
             next_action=str(state.get("next_action", "answer")),
             intent=str(state.get("intent", "qa")),
+            debug_summary=debug_summary,
         )
 
     def get_session(self, db: Session, session_id: str) -> SessionRead:
@@ -117,6 +121,43 @@ class KnowledgeOpsAgentService:
             next_action=trace.next_action,
             confidence=trace.confidence,
             final_answer=trace.final_answer,
+            debug_summary=json.loads(trace.debug_summary_json or "{}"),
             created_at=trace.created_at,
             steps=steps,
         )
+
+    def search_traces(
+        self,
+        db: Session,
+        *,
+        intent: str | None = None,
+        next_action: str | None = None,
+        user_role: str | None = None,
+        failed_only: bool = False,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        limit: int = 50,
+    ) -> list[TraceSearchResult]:
+        return [
+            TraceSearchResult(
+                trace_id=trace.trace_id,
+                session_id=trace.session_id,
+                query=trace.query,
+                user_role=trace.user_role,
+                intent=trace.intent,
+                next_action=trace.next_action,
+                confidence=trace.confidence,
+                created_at=trace.created_at,
+                has_failure=has_failure,
+            )
+            for trace, has_failure in self.chat_repository.search_traces(
+                db,
+                intent=intent,
+                next_action=next_action,
+                user_role=user_role,
+                failed_only=failed_only,
+                created_after=created_after,
+                created_before=created_before,
+                limit=limit,
+            )
+        ]

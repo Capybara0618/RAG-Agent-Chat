@@ -97,9 +97,9 @@ class DocumentParser:
                 continue
             sections.append(
                 SourceSection(
-                    heading=category or "FAQ",
+                    heading=category or "常见问题",
                     location=f"row {index}",
-                    content=f"Question: {question}\nAnswer: {answer}",
+                    content=f"问题：{question}\n回答：{answer}",
                     metadata={"category": category},
                 )
             )

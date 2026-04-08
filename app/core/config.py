@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -29,7 +29,10 @@ def build_settings(**overrides: object) -> Settings:
 
     return Settings(
         app_name=str(overrides.get("app_name") or os.getenv("APP_NAME", "KnowledgeOps Copilot")),
-        database_url=str(overrides.get("database_url") or os.getenv("DATABASE_URL", "sqlite:///./knowledgeops.db")),
+        database_url=str(
+            overrides.get("database_url")
+            or os.getenv("DATABASE_URL", "postgresql+psycopg://postgres:postgres@localhost:5432/knowledgeops")
+        ),
         openai_api_base=str(overrides.get("openai_api_base") or os.getenv("OPENAI_API_BASE", "")),
         openai_api_key=str(overrides.get("openai_api_key") or os.getenv("OPENAI_API_KEY", "")),
         openai_model=str(overrides.get("openai_model") or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")),

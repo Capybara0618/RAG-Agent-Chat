@@ -3,16 +3,17 @@
 import re
 
 from app.services.ingestion.connectors import SourceSection
+from app.services.retrieval.embeddings import tokenize_text
 
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+")
 
 
 def extract_keywords(text: str, limit: int = 12) -> list[str]:
-    tokens = [token.lower() for token in TOKEN_PATTERN.findall(text)]
+    tokens = [token.lower() for token in tokenize_text(text)]
     scores: dict[str, int] = {}
     for token in tokens:
-        if len(token) < 3:
+        if len(token) < 2:
             continue
         scores[token] = scores.get(token, 0) + 1
     ordered = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
@@ -38,7 +39,7 @@ def semantic_chunk_sections(sections: list[SourceSection], max_chars: int = 900)
                         "location": f"{section.location} chunk {chunk_index}",
                         "content": current.strip(),
                         "keywords": extract_keywords(current),
-                        "token_count": len(TOKEN_PATTERN.findall(current)),
+                        "token_count": len(tokenize_text(current)),
                         "metadata": section.metadata,
                     }
                 )
@@ -54,7 +55,7 @@ def semantic_chunk_sections(sections: list[SourceSection], max_chars: int = 900)
                     "location": f"{section.location} chunk {chunk_index}",
                     "content": current.strip(),
                     "keywords": extract_keywords(current),
-                    "token_count": len(TOKEN_PATTERN.findall(current)),
+                    "token_count": len(tokenize_text(current)),
                     "metadata": section.metadata,
                 }
             )

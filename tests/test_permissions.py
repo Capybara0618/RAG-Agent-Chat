@@ -5,7 +5,7 @@ def test_guest_cannot_access_employee_only_documents(client):
     response = client.post(
         "/chat/query",
         json={
-            "query": "What is required for remote access?",
+            "query": "哪些情况必须升级法务审批？",
             "user_role": "guest",
             "top_k": 5,
         },

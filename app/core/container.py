@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.services.agent.service import KnowledgeOpsAgentService
 from app.services.evaluation.service import EvaluationService
 from app.services.ingestion.service import IngestionService
+from app.services.project_service import ProjectService
 from app.services.retrieval.embeddings import EmbeddingService
 from app.services.retrieval.service import RetrievalService
 
@@ -21,3 +22,4 @@ class AppContainer:
     ingestion_service: IngestionService
     agent_service: KnowledgeOpsAgentService
     evaluation_service: EvaluationService
+    project_service: ProjectService

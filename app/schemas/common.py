@@ -1,8 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Citation(BaseModel):
@@ -11,6 +11,7 @@ class Citation(BaseModel):
     location: str
     snippet: str
     score: float
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
 
 
 class TraceStepRead(BaseModel):

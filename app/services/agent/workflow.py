@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import json
 import time
 from typing import Callable
 
@@ -53,11 +54,11 @@ class KnowledgeGraphBuilder:
 
     def build(self, db: Session):
         graph = StateGraph(AgentState)
-        graph.add_node("intent_router", self._wrap("Intent Router", lambda state: self.intent_router(state)))
-        graph.add_node("retrieval_planner", self._wrap("Retrieval Planner", lambda state: self.retrieval_planner(state)))
-        graph.add_node("tool_executor", self._wrap("Tool Executor", lambda state: self.tool_executor(state, db)))
-        graph.add_node("answer_composer", self._wrap("Answer Composer", lambda state: self.answer_composer(state)))
-        graph.add_node("citation_verifier", self._wrap("Citation Verifier", lambda state: self.citation_verifier(state)))
+        graph.add_node("intent_router", self._wrap("意图路由", lambda state: self.intent_router(state)))
+        graph.add_node("retrieval_planner", self._wrap("检索规划", lambda state: self.retrieval_planner(state)))
+        graph.add_node("tool_executor", self._wrap("检索执行", lambda state: self.tool_executor(state, db)))
+        graph.add_node("answer_composer", self._wrap("答案生成", lambda state: self.answer_composer(state)))
+        graph.add_node("citation_verifier", self._wrap("引用校验", lambda state: self.citation_verifier(state)))
         graph.set_entry_point("intent_router")
         graph.add_edge("intent_router", "retrieval_planner")
         graph.add_edge("retrieval_planner", "tool_executor")
@@ -75,7 +76,7 @@ class KnowledgeGraphBuilder:
             except Exception as exc:
                 new_state = state.copy()
                 new_state["next_action"] = "clarify"
-                new_state["final_answer"] = f"Workflow degraded at {node_name}: {exc}"
+                new_state["final_answer"] = f"工作流在“{node_name}”阶段发生降级：{exc}"
                 success = False
             latency_ms = round((time.perf_counter() - started) * 1000, 2)
             trace_steps = list(new_state.get("trace_steps", []))
@@ -94,25 +95,45 @@ class KnowledgeGraphBuilder:
         return runner
 
     def intent_router(self, state: AgentState) -> AgentState:
-        state["intent"] = self.llm_client.route_intent(state["query"])
+        intent, confidence = self.llm_client.classify_intent(state["query"])
+        state["intent"] = intent
+        state["intent_confidence"] = confidence
         return state
 
     def retrieval_planner(self, state: AgentState) -> AgentState:
-        state["retrieval_plan"] = self.llm_client.build_retrieval_plan(state["query"], state["intent"], state["top_k"])
+        plan = self.llm_client.build_retrieval_plan(state["query"], state["intent"], state["top_k"])
+        state["retrieval_plan"] = plan
         return state
 
     def tool_executor(self, state: AgentState, db: Session) -> AgentState:
         plan = state["retrieval_plan"]
-        retrieved = self.retrieval_service.retrieve(
-            db,
-            query=str(plan["query"]),
-            user_role=state["user_role"],
-            top_k=int(plan["top_k"]),
-        )
+        retrieved, retrieval_debug = self.search_knowledge(db, state)
         state["retrieved_chunks"] = retrieved
+        state["retrieval_debug"] = retrieval_debug
         state["citations"] = self.retrieval_service.to_citations(retrieved)
         state["compressed_context"] = self.retrieval_service.compress_context(retrieved)
+
+        if plan.get("allow_multi_doc"):
+            document_ids = list(dict.fromkeys(chunk.document_id for chunk in retrieved[:3]))
+            state["comparison_view"] = self.compare_evidence(
+                self.fetch_document_sections(db, document_ids=document_ids)
+            )
         return state
+
+    def search_knowledge(self, db: Session, state: AgentState):
+        return self.retrieval_service.retrieve(
+            db,
+            query=state["query"],
+            user_role=state["user_role"],
+            top_k=int(state["retrieval_plan"]["top_k"]),
+            plan=state["retrieval_plan"],
+        )
+
+    def fetch_document_sections(self, db: Session, *, document_ids: list[str]):
+        return self.retrieval_service.fetch_document_sections(db, document_ids)
+
+    def compare_evidence(self, chunks):
+        return self.retrieval_service.compare_evidence(chunks)
 
     def answer_composer(self, state: AgentState) -> AgentState:
         answer, confidence, next_action = self.llm_client.compose_answer(
@@ -120,6 +141,7 @@ class KnowledgeGraphBuilder:
             intent=state["intent"],
             citations=list(state.get("citations", [])),
             retrieved_chunks=list(state.get("retrieved_chunks", [])),
+            comparison_view=state.get("comparison_view"),
             history=state["history"],
         )
         state["draft_answer"] = answer
@@ -130,31 +152,48 @@ class KnowledgeGraphBuilder:
     def citation_verifier(self, state: AgentState) -> AgentState:
         answer = str(state.get("draft_answer", ""))
         citations = list(state.get("citations", []))
-        verified_confidence, verified_action = self.llm_client.verify_citations(answer, citations)
+        verified_confidence, verified_action, verification_debug = self.llm_client.verify_citations(answer, citations)
         state["confidence"] = round(min(state.get("confidence", 0.0), verified_confidence), 2)
         if verified_action != "answer":
             state["next_action"] = verified_action
+            if verification_debug.get("has_conflict"):
+                answer = f"{answer}\n\n说明：当前引用到的多份资料存在潜在冲突，建议进一步确认适用的制度版本或部门范围。"
+        state["verification_debug"] = verification_debug
         state["final_answer"] = answer
+        state["debug_summary"] = {
+            "intent": state.get("intent", "qa"),
+            "intent_confidence": state.get("intent_confidence", 0.0),
+            "retrieval_plan": state.get("retrieval_plan", {}),
+            "retrieval": state.get("retrieval_debug", {}),
+            "comparison_view": state.get("comparison_view", {}),
+            "verification": verification_debug,
+        }
         return state
 
     @staticmethod
     def _summarize_input(node_name: str, state: AgentState) -> str:
-        if node_name == "Intent Router":
+        if node_name == "意图路由":
             return state["query"][:160]
-        if node_name == "Tool Executor":
+        if node_name == "检索执行":
             plan = state.get("retrieval_plan", {})
-            return f"top_k={plan.get('top_k')} role={state.get('user_role')}"
-        return f"intent={state.get('intent', '')} query={state['query'][:80]}"
+            return f"召回数量={plan.get('top_k')} 角色={state.get('user_role')}"
+        return f"意图={state.get('intent', '')} 问题={state['query'][:80]}"
 
     @staticmethod
     def _summarize_output(node_name: str, state: AgentState) -> str:
-        if node_name == "Intent Router":
-            return f"intent={state.get('intent', '')}"
-        if node_name == "Retrieval Planner":
-            plan = state.get("retrieval_plan", {})
-            return f"plan={plan}"
-        if node_name == "Tool Executor":
-            return f"citations={len(state.get('citations', []))}"
-        if node_name == "Answer Composer":
-            return f"next_action={state.get('next_action', '')} confidence={state.get('confidence', 0.0)}"
-        return f"verified_action={state.get('next_action', '')} confidence={state.get('confidence', 0.0)}"
+        if node_name == "意图路由":
+            return f"意图={state.get('intent', '')} 置信度={state.get('intent_confidence', 0.0)}"
+        if node_name == "检索规划":
+            return json.dumps(state.get("retrieval_plan", {}), ensure_ascii=False)
+        if node_name == "检索执行":
+            retrieval_debug = state.get("retrieval_debug", {})
+            return json.dumps(
+                {
+                    "citation_count": len(state.get("citations", [])),
+                    "retrieval": retrieval_debug,
+                },
+                ensure_ascii=False,
+            )
+        if node_name == "答案生成":
+            return f"系统动作={state.get('next_action', '')} 置信度={state.get('confidence', 0.0)}"
+        return json.dumps(state.get("verification_debug", {}), ensure_ascii=False)

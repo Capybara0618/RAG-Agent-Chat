@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+from typing import TypedDict
+from typing_extensions import NotRequired
 
 from app.schemas.common import Citation
 
@@ -13,12 +14,17 @@ class AgentState(TypedDict):
     history: list[dict[str, str]]
     trace_id: str
     intent: NotRequired[str]
+    intent_confidence: NotRequired[float]
     retrieval_plan: NotRequired[dict[str, object]]
     citations: NotRequired[list[Citation]]
     compressed_context: NotRequired[str]
+    retrieval_debug: NotRequired[dict[str, object]]
+    comparison_view: NotRequired[dict[str, object]]
     draft_answer: NotRequired[str]
     final_answer: NotRequired[str]
     confidence: NotRequired[float]
     next_action: NotRequired[str]
+    verification_debug: NotRequired[dict[str, object]]
+    debug_summary: NotRequired[dict[str, object]]
     trace_steps: NotRequired[list[dict[str, object]]]
     retrieved_chunks: NotRequired[list[object]]

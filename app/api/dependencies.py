@@ -9,6 +9,7 @@ from app.core.container import AppContainer
 from app.services.agent.service import KnowledgeOpsAgentService
 from app.services.evaluation.service import EvaluationService
 from app.services.ingestion.service import IngestionService
+from app.services.project_service import ProjectService
 
 
 def get_container(request: Request) -> AppContainer:
@@ -33,3 +34,7 @@ def get_agent_service(container: AppContainer = Depends(get_container)) -> Knowl
 
 def get_evaluation_service(container: AppContainer = Depends(get_container)) -> EvaluationService:
     return container.evaluation_service
+
+
+def get_project_service(container: AppContainer = Depends(get_container)) -> ProjectService:
+    return container.project_service
