@@ -31,30 +31,41 @@ class EvalFailureTag(str, Enum):
 
 
 class ProcurementStage(str, Enum):
-    draft = "draft"
-    vendor_onboarding = "vendor_onboarding"
-    security_review = "security_review"
+    business_draft = "business_draft"
+    manager_review = "manager_review"
+    procurement_sourcing = "procurement_sourcing"
     legal_review = "legal_review"
-    approval = "approval"
+    final_approval = "final_approval"
     signing = "signing"
     completed = "completed"
+
+
+class VendorCandidateStatus(str, Enum):
+    candidate = "candidate"
+    shortlisted = "shortlisted"
+    selected = "selected"
     rejected = "rejected"
+    legal_rejected = "legal_rejected"
 
 
 class ProcurementProject(Base):
     __tablename__ = "procurement_projects"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    created_by_user_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     title: Mapped[str] = mapped_column(String(255), index=True)
     requester_name: Mapped[str] = mapped_column(String(120), default="")
     department: Mapped[str] = mapped_column(String(120), default="")
     vendor_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    selected_vendor_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     category: Mapped[str] = mapped_column(String(120), default="")
     budget_amount: Mapped[float] = mapped_column(Float, default=0.0)
     currency: Mapped[str] = mapped_column(String(12), default="CNY")
     summary: Mapped[str] = mapped_column(Text, default="")
+    business_value: Mapped[str] = mapped_column(Text, default="")
+    target_go_live_date: Mapped[str] = mapped_column(String(20), default="")
     data_scope: Mapped[str] = mapped_column(String(50), default="none")
-    current_stage: Mapped[str] = mapped_column(String(50), default=ProcurementStage.draft.value, index=True)
+    current_stage: Mapped[str] = mapped_column(String(50), default=ProcurementStage.business_draft.value, index=True)
     risk_level: Mapped[str] = mapped_column(String(20), default="low")
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     current_owner_role: Mapped[str] = mapped_column(String(50), default="business")
@@ -69,6 +80,11 @@ class ProjectStageRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(ForeignKey("procurement_projects.id", ondelete="CASCADE"), index=True)
     stage: Mapped[str] = mapped_column(String(50), index=True)
+    from_stage: Mapped[str] = mapped_column(String(50), default="")
+    to_stage: Mapped[str] = mapped_column(String(50), default="")
+    action: Mapped[str] = mapped_column(String(50), default="entered")
+    actor_role: Mapped[str] = mapped_column(String(50), default="system")
+    reason: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="active")
     owner_role: Mapped[str] = mapped_column(String(50), default="")
     blocking_reason: Mapped[str] = mapped_column(Text, default="")
@@ -93,15 +109,39 @@ class ProjectTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class VendorCandidate(Base):
+    __tablename__ = "vendor_candidates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str] = mapped_column(ForeignKey("procurement_projects.id", ondelete="CASCADE"), index=True)
+    vendor_name: Mapped[str] = mapped_column(String(255), index=True)
+    source_platform: Mapped[str] = mapped_column(String(120), default="")
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    profile_summary: Mapped[str] = mapped_column(Text, default="")
+    procurement_notes: Mapped[str] = mapped_column(Text, default="")
+    ai_review_summary: Mapped[str] = mapped_column(Text, default="")
+    ai_review_json: Mapped[str] = mapped_column(Text, default="{}")
+    ai_recommendation: Mapped[str] = mapped_column(String(50), default="")
+    ai_review_trace_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    manual_decision: Mapped[str] = mapped_column(String(50), default="")
+    manual_reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default=VendorCandidateStatus.candidate.value, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class ProjectArtifact(Base):
     __tablename__ = "project_artifacts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(ForeignKey("procurement_projects.id", ondelete="CASCADE"), index=True)
     document_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    linked_vendor_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     stage: Mapped[str] = mapped_column(String(50), index=True)
     artifact_type: Mapped[str] = mapped_column(String(80), default="document")
     title: Mapped[str] = mapped_column(String(255))
+    direction: Mapped[str] = mapped_column(String(30), default="internal")
+    version_no: Mapped[int] = mapped_column(Integer, default=1)
     required: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(30), default="missing", index=True)
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -115,9 +155,15 @@ class ProjectDecision(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(ForeignKey("procurement_projects.id", ondelete="CASCADE"), index=True)
     stage: Mapped[str] = mapped_column(String(50), index=True)
+    subject_type: Mapped[str] = mapped_column(String(50), default="project")
+    subject_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     decision_type: Mapped[str] = mapped_column(String(50), default="ai_review")
     decision_by: Mapped[str] = mapped_column(String(50), default="system")
+    ai_recommendation: Mapped[str] = mapped_column(String(50), default="")
+    manual_decision: Mapped[str] = mapped_column(String(50), default="")
     decision_summary: Mapped[str] = mapped_column(Text, default="")
+    structured_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    reason: Mapped[str] = mapped_column(Text, default="")
     trace_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -127,6 +173,7 @@ class ProjectRisk(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(ForeignKey("procurement_projects.id", ondelete="CASCADE"), index=True)
+    linked_vendor_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     stage: Mapped[str] = mapped_column(String(50), index=True)
     risk_type: Mapped[str] = mapped_column(String(80), default="general")
     severity: Mapped[str] = mapped_column(String(30), default="medium")
@@ -135,6 +182,16 @@ class ProjectRisk(Base):
     trace_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ProjectArchiveSnapshot(Base):
+    __tablename__ = "project_archive_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str] = mapped_column(ForeignKey("procurement_projects.id", ondelete="CASCADE"), index=True)
+    stage: Mapped[str] = mapped_column(String(50), default=ProcurementStage.completed.value)
+    snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Document(Base):
@@ -175,6 +232,7 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     title: Mapped[str] = mapped_column(String(255), default="New Session")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -196,6 +254,7 @@ class TraceRecord(Base):
 
     trace_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     session_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     user_role: Mapped[str] = mapped_column(String(50))
     query: Mapped[str] = mapped_column(Text)
     intent: Mapped[str] = mapped_column(String(50), default="")
@@ -266,6 +325,7 @@ class Feedback(Base):
     __tablename__ = "feedback"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     session_id: Mapped[str] = mapped_column(String(36), index=True)
     trace_id: Mapped[str] = mapped_column(String(36), index=True)
     rating: Mapped[int] = mapped_column(Integer, default=0)
@@ -296,3 +356,26 @@ class IndexingTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(128), default="")
+    display_name: Mapped[str] = mapped_column(String(120), default="")
+    role: Mapped[str] = mapped_column(String(30), index=True)
+    department: Mapped[str] = mapped_column(String(120), default="", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user_accounts.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

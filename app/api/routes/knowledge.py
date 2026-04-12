@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_db, get_ingestion_service
+from app.api.dependencies import get_db, get_ingestion_service, require_roles
+from app.schemas.auth import UserProfileRead
 from app.schemas.knowledge import IndexingTaskRead, KnowledgeSourceRead, KnowledgeUploadResponse, ReindexRequest, ReindexResponse
 from app.services.ingestion.service import IngestionService
 
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 def list_sources(
     db: Session = Depends(get_db),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> list[KnowledgeSourceRead]:
     return ingestion_service.list_sources(db)
 
@@ -24,6 +26,7 @@ def get_task(
     task_id: str,
     db: Session = Depends(get_db),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> IndexingTaskRead:
     task = ingestion_service.get_task(db, task_id)
     if task is None:
@@ -40,6 +43,7 @@ async def upload_source(
     tags: str = Form(default=""),
     db: Session = Depends(get_db),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> KnowledgeUploadResponse:
     if file is None and not remote_url:
         raise HTTPException(status_code=400, detail="Provide either a file upload or remote_url.")
@@ -78,6 +82,7 @@ def reindex_sources(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> ReindexResponse:
     response = ingestion_service.reindex(db, payload.document_ids)
     db.commit()

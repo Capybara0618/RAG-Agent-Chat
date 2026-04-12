@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.routes.auth import router as auth_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.knowledge import router as knowledge_router
@@ -16,12 +17,14 @@ from app.core.config import Settings, get_settings
 from app.core.container import AppContainer
 from app.db.init_db import init_db
 from app.db.session import create_session_factory
+from app.repositories.auth_repository import AuthRepository
 from app.repositories.chat_repository import ChatRepository
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.evaluation_repository import EvaluationRepository
 from app.repositories.project_repository import ProjectRepository
 from app.services.agent.llm import LLMClient
 from app.services.agent.service import KnowledgeOpsAgentService
+from app.services.auth_service import AuthService
 from app.services.evaluation.service import EvaluationService
 from app.services.ingestion.connectors import DocumentParser
 from app.services.ingestion.service import IngestionService
@@ -56,6 +59,7 @@ def create_container(settings: Settings) -> AppContainer:
         repository=EvaluationRepository(),
         agent_service=agent_service,
     )
+    auth_service = AuthService(repository=AuthRepository())
     project_service = ProjectService(
         repository=ProjectRepository(),
         agent_service=agent_service,
@@ -67,6 +71,7 @@ def create_container(settings: Settings) -> AppContainer:
         retrieval_service=retrieval_service,
         ingestion_service=ingestion_service,
         agent_service=agent_service,
+        auth_service=auth_service,
         evaluation_service=evaluation_service,
         project_service=project_service,
     )
@@ -85,6 +90,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
 
         db = container.session_factory()
         try:
+            container.auth_service.seed_demo_users(db)
             container.evaluation_service.seed_default_cases(db)
         finally:
             db.close()
@@ -93,6 +99,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.state.container = container
+    app.include_router(auth_router)
     app.include_router(knowledge_router)
     app.include_router(chat_router)
     app.include_router(trace_router)

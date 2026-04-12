@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import EvalFailureTag
 from app.repositories.evaluation_repository import EvaluationRepository
+from app.schemas.auth import UserProfileRead
 from app.schemas.chat import QueryRequest
 from app.schemas.evaluation import EvalCaseCreate, EvalCaseRead, EvalResultRead, EvalRunRead, EvalRunRequest
 from app.services.agent.service import KnowledgeOpsAgentService
@@ -109,11 +110,14 @@ class EvaluationService:
         for case in cases:
             response = self.agent_service.query(
                 db,
-                QueryRequest(
-                    query=case.question,
-                    session_id=self._build_eval_session_id(run.id, case.id),
-                    user_role=case.required_role,
-                    top_k=5,
+                QueryRequest(query=case.question, session_id=self._build_eval_session_id(run.id, case.id), top_k=5),
+                current_user=UserProfileRead(
+                    id=f"eval-{case.required_role}",
+                    username=f"eval-{case.required_role}",
+                    display_name=f"Eval {case.required_role}",
+                    role=case.required_role,
+                    department="evaluation",
+                    status="active",
                 ),
             )
             retrieved_titles = {citation.document_title for citation in response.citations}

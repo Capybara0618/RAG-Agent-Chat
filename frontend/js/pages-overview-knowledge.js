@@ -6,6 +6,7 @@ import { ActivityList, StatCard } from "./components.js";
 
 export function OverviewPage({
   html,
+  currentUser,
   sources,
   tasks,
   traces,
@@ -26,8 +27,7 @@ export function OverviewPage({
         <div>
           <h2>\u5e73\u53f0\u603b\u89c8</h2>
           <p>
-            \u8fd9\u662f\u6574\u4e2a\u91c7\u8d2d\u5ba1\u67e5\u5e73\u53f0\u7684\u5165\u53e3\u3002\u4f60\u53ef\u4ee5\u5148\u770b\u9879\u76ee\u72b6\u6001\uff0c\u518d\u53bb\u77e5\u8bc6\u5e93\u4e0a\u4f20\u6587\u6863\uff0c
-            \u6216\u76f4\u63a5\u53d1\u8d77 AI \u5ba1\u67e5\u3002
+            \u8fd9\u662f ${displayLabel(currentUser?.role)} \u7684\u5de5\u4f5c\u53f0\u5165\u53e3\u3002\u7cfb\u7edf\u53ea\u4f1a\u5c55\u793a\u4f60\u5f53\u524d\u89d2\u8272\u9700\u8981\u5904\u7406\u7684\u9879\u76ee\u4e0e\u6a21\u5757\u3002
           </p>
         </div>
       </div>
@@ -43,26 +43,34 @@ export function OverviewPage({
           <div className="hero-actions">
             <button className="btn primary" onClick=${() => setPage("projects")}>
               <i data-lucide="workflow" style=${{ width: "15px", height: "15px" }}></i>
-              \u6253\u5f00\u91c7\u8d2d\u9879\u76ee
+              \u6253\u5f00\u5de5\u4f5c\u53f0
             </button>
-            <button className="btn secondary" onClick=${() => setPage("knowledge")}>
-              <i data-lucide="database" style=${{ width: "15px", height: "15px" }}></i>
-              \u7ba1\u7406\u77e5\u8bc6\u5e93
-            </button>
-            <button
-              className="btn ghost"
-              onClick=${() => {
-                setDraftQuestion(DEMO_QUESTIONS[1]);
-                setPage("assistant");
-              }}
-            >
-              <i data-lucide="git-compare-arrows" style=${{ width: "15px", height: "15px" }}></i>
-              \u76f4\u63a5\u8bd5\u7528\u5bf9\u6bd4\u5ba1\u67e5
-            </button>
+            ${currentUser?.role === "admin"
+              ? html`
+                  <button className="btn secondary" onClick=${() => setPage("knowledge")}>
+                    <i data-lucide="database" style=${{ width: "15px", height: "15px" }}></i>
+                    \u7ba1\u7406\u77e5\u8bc6\u5e93
+                  </button>
+                `
+              : null}
+            ${currentUser?.role !== "business"
+              ? html`
+                  <button
+                    className="btn ghost"
+                    onClick=${() => {
+                      setDraftQuestion(DEMO_QUESTIONS[1]);
+                      setPage("assistant");
+                    }}
+                  >
+                    <i data-lucide="git-compare-arrows" style=${{ width: "15px", height: "15px" }}></i>
+                    \u76f4\u63a5\u8bd5\u7528\u5bf9\u6bd4\u5ba1\u67e5
+                  </button>
+                `
+              : null}
           </div>
           <div className="hero-foot">
             <div className="helper-text">
-              \u5982\u679c\u4f60\u662f\u7b2c\u4e00\u6b21\u4f53\u9a8c\uff0c\u5efa\u8bae\u6309\u201c\u77e5\u8bc6\u5e93 \u2192 \u91c7\u8d2d\u9879\u76ee \u2192 \u5ba1\u67e5\u52a9\u624b \u2192 Trace\u201d\u7684\u987a\u5e8f\u4f7f\u7528\u3002
+              \u540c\u4e00\u4e2a\u9879\u76ee\u5728\u4e0d\u540c\u89d2\u8272\u4e0b\u4f1a\u770b\u5230\u4e0d\u540c\u4fe1\u606f\u7c92\u5ea6\uff0c\u8fd9\u91cc\u5c55\u793a\u7684\u90fd\u662f\u5f53\u524d\u8d26\u53f7\u53ef\u89c1\u5185\u5bb9\u3002
             </div>
           </div>
         </div>

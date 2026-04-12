@@ -5,7 +5,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_agent_service, get_db
+from app.api.dependencies import get_agent_service, get_db, require_roles
+from app.schemas.auth import UserProfileRead
 from app.schemas.trace import TraceRead, TraceSearchResult
 from app.services.agent.service import KnowledgeOpsAgentService
 
@@ -24,6 +25,7 @@ def search_traces(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
     agent_service: KnowledgeOpsAgentService = Depends(get_agent_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> list[TraceSearchResult]:
     return agent_service.search_traces(
         db,
@@ -42,6 +44,7 @@ def get_trace(
     trace_id: str,
     db: Session = Depends(get_db),
     agent_service: KnowledgeOpsAgentService = Depends(get_agent_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> TraceRead:
     trace = agent_service.get_trace(db, trace_id)
     if trace is None:

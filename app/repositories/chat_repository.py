@@ -11,16 +11,23 @@ from app.models.entities import ChatMessage, ChatSession, Feedback, TraceRecord,
 
 
 class ChatRepository:
-    def get_or_create_session(self, db: Session, session_id: str | None, seed_title: str) -> ChatSession:
+    def get_or_create_session(self, db: Session, session_id: str | None, seed_title: str, user_id: str) -> ChatSession:
         if session_id:
             existing = db.get(ChatSession, session_id)
-            if existing:
+            if existing and (
+                existing.user_id == user_id
+                or existing.user_id.startswith("project-")
+                or user_id.startswith("project-")
+            ):
                 return existing
 
-        session = ChatSession(id=session_id or str(uuid.uuid4()), title=seed_title[:80] or "New Session")
+        session = ChatSession(id=session_id or str(uuid.uuid4()), user_id=user_id, title=seed_title[:80] or "New Session")
         db.add(session)
         db.flush()
         return session
+
+    def get_session(self, db: Session, session_id: str) -> ChatSession | None:
+        return db.get(ChatSession, session_id)
 
     def list_messages(self, db: Session, session_id: str) -> list[ChatMessage]:
         statement = select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc())
@@ -47,8 +54,8 @@ class ChatRepository:
         db.flush()
         return message
 
-    def create_trace(self, db: Session, *, trace_id: str, session_id: str, user_role: str, query: str) -> TraceRecord:
-        trace = TraceRecord(trace_id=trace_id, session_id=session_id, user_role=user_role, query=query)
+    def create_trace(self, db: Session, *, trace_id: str, session_id: str, user_id: str, user_role: str, query: str) -> TraceRecord:
+        trace = TraceRecord(trace_id=trace_id, session_id=session_id, user_id=user_id, user_role=user_role, query=query)
         db.add(trace)
         db.flush()
         return trace
@@ -164,6 +171,7 @@ class ChatRepository:
                 "trace_id": trace_id,
             }
         feedback = Feedback(
+            user_id=trace.user_id if trace is not None else "",
             session_id=session_id,
             trace_id=trace_id,
             rating=rating,

@@ -4,9 +4,11 @@ import json
 import uuid
 from datetime import datetime
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.repositories.chat_repository import ChatRepository
+from app.schemas.auth import UserProfileRead
 from app.schemas.chat import ChatMessageRead, FeedbackCreate, FeedbackRead, QueryRequest, QueryResponse, SessionRead
 from app.schemas.trace import TraceRead, TraceSearchResult
 from app.services.agent.llm import LLMClient
@@ -26,11 +28,18 @@ class KnowledgeOpsAgentService:
         self.retrieval_service = retrieval_service
         self.llm_client = llm_client
 
-    def query(self, db: Session, request: QueryRequest) -> QueryResponse:
-        session = self.chat_repository.get_or_create_session(db, request.session_id, request.query)
+    def query(self, db: Session, request: QueryRequest, *, current_user: UserProfileRead) -> QueryResponse:
+        session = self.chat_repository.get_or_create_session(db, request.session_id, request.query, current_user.id)
         history_messages = self.chat_repository.list_messages(db, session.id)
         trace_id = str(uuid.uuid4())
-        self.chat_repository.create_trace(db, trace_id=trace_id, session_id=session.id, user_role=request.user_role, query=request.query)
+        self.chat_repository.create_trace(
+            db,
+            trace_id=trace_id,
+            session_id=session.id,
+            user_id=current_user.id,
+            user_role=current_user.role,
+            query=request.query,
+        )
         self.chat_repository.add_message(db, session_id=session.id, role="user", content=request.query, trace_id=trace_id)
 
         workflow = KnowledgeGraphBuilder(llm_client=self.llm_client, retrieval_service=self.retrieval_service).build(db)
@@ -38,7 +47,7 @@ class KnowledgeOpsAgentService:
             {
                 "query": request.query,
                 "session_id": session.id,
-                "user_role": request.user_role,
+                "user_role": current_user.role,
                 "top_k": request.top_k,
                 "history": [{"role": msg.role, "content": msg.content} for msg in history_messages[-6:]],
                 "trace_id": trace_id,
@@ -80,7 +89,10 @@ class KnowledgeOpsAgentService:
             debug_summary=debug_summary,
         )
 
-    def get_session(self, db: Session, session_id: str) -> SessionRead:
+    def get_session(self, db: Session, session_id: str, *, current_user: UserProfileRead) -> SessionRead:
+        session = self.chat_repository.get_session(db, session_id)
+        if session is None or (current_user.role != "admin" and session.user_id != current_user.id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
         messages = self.chat_repository.list_messages(db, session_id)
         return SessionRead(
             id=session_id,
@@ -96,7 +108,10 @@ class KnowledgeOpsAgentService:
             ],
         )
 
-    def add_feedback(self, db: Session, payload: FeedbackCreate) -> FeedbackRead:
+    def add_feedback(self, db: Session, payload: FeedbackCreate, *, current_user: UserProfileRead) -> FeedbackRead:
+        session = self.chat_repository.get_session(db, payload.session_id)
+        if session is None or (current_user.role != "admin" and session.user_id != current_user.id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
         feedback = self.chat_repository.add_feedback(
             db,
             session_id=payload.session_id,

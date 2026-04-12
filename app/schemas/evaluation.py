@@ -10,7 +10,7 @@ class EvalCaseCreate(BaseModel):
     expected_answer: str = ""
     expected_document_title: str = ""
     task_type: str = "qa"
-    required_role: str = "employee"
+    required_role: str = "manager"
     knowledge_domain: str = "general"
 
 

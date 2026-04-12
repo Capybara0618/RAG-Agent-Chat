@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import Settings
 from app.services.agent.service import KnowledgeOpsAgentService
+from app.services.auth_service import AuthService
 from app.services.evaluation.service import EvaluationService
 from app.services.ingestion.service import IngestionService
 from app.services.project_service import ProjectService
@@ -21,5 +22,6 @@ class AppContainer:
     retrieval_service: RetrievalService
     ingestion_service: IngestionService
     agent_service: KnowledgeOpsAgentService
+    auth_service: AuthService
     evaluation_service: EvaluationService
     project_service: ProjectService

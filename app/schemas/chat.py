@@ -10,7 +10,7 @@ from app.schemas.common import Citation
 class QueryRequest(BaseModel):
     query: str
     session_id: str | None = None
-    user_role: str = "employee"
+    user_role: str = "manager"
     top_k: int = Field(default=5, ge=1, le=10)
 
 

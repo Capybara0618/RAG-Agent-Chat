@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_db, get_evaluation_service
+from app.api.dependencies import get_db, get_evaluation_service, require_roles
+from app.schemas.auth import UserProfileRead
 from app.schemas.evaluation import EvalCaseCreate, EvalCaseRead, EvalRunRead, EvalRunRequest
 from app.services.evaluation.service import EvaluationService
 
@@ -18,6 +19,7 @@ def list_eval_cases(
     knowledge_domains: list[str] = Query(default=[]),
     db: Session = Depends(get_db),
     evaluation_service: EvaluationService = Depends(get_evaluation_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> list[EvalCaseRead]:
     return evaluation_service.list_cases(
         db,
@@ -32,6 +34,7 @@ def create_eval_case(
     payload: EvalCaseCreate,
     db: Session = Depends(get_db),
     evaluation_service: EvaluationService = Depends(get_evaluation_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> EvalCaseRead:
     return evaluation_service.create_case(db, payload)
 
@@ -41,6 +44,7 @@ def run_evaluation(
     payload: EvalRunRequest,
     db: Session = Depends(get_db),
     evaluation_service: EvaluationService = Depends(get_evaluation_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> EvalRunRead:
     return evaluation_service.run(db, payload)
 
@@ -50,6 +54,7 @@ def get_evaluation_run(
     run_id: str,
     db: Session = Depends(get_db),
     evaluation_service: EvaluationService = Depends(get_evaluation_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
 ) -> EvalRunRead:
     run = evaluation_service.get_run(db, run_id)
     if run is None:

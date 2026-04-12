@@ -13,6 +13,13 @@ from app.main import create_app
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def login_headers(client: TestClient, username: str) -> dict[str, str]:
+    response = client.post("/auth/login", json={"username": username, "password": username})
+    assert response.status_code == 200, response.text
+    token = response.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
     database_url = os.getenv("TEST_DATABASE_URL") or f"sqlite:///{(tmp_path / 'test.db').as_posix()}"
@@ -25,6 +32,7 @@ def client(tmp_path: Path) -> TestClient:
     app = create_app(settings)
 
     with TestClient(app) as test_client:
+        admin_headers = login_headers(test_client, "admin")
         sample_files = [
             (
                 "procurement_cn_vendor_onboarding_policy.md",
@@ -74,10 +82,19 @@ def client(tmp_path: Path) -> TestClient:
                 "/knowledge/upload",
                 files={"file": (name, content, "application/octet-stream")},
                 data={"allowed_roles": "employee", "tags": "sample"},
+                headers=admin_headers,
             )
             assert response.status_code == 200, response.text
             task_id = response.json()["task_id"]
-            task_response = test_client.get(f"/knowledge/tasks/{task_id}")
+            task_response = test_client.get(f"/knowledge/tasks/{task_id}", headers=admin_headers)
             assert task_response.status_code == 200, task_response.text
             assert task_response.json()["status"] == "indexed"
         yield test_client
+
+
+@pytest.fixture()
+def auth_headers(client: TestClient):
+    def _login(username: str) -> dict[str, str]:
+        return login_headers(client, username)
+
+    return _login

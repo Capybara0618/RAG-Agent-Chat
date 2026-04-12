@@ -1,5 +1,5 @@
 import React, { useEffect } from "https://esm.sh/react@18.3.1";
-import { API_BASE_URL, DEMO_QUESTIONS, NAV_ITEMS, displayLabel, toneOf } from "./config.js";
+import { API_BASE_URL, DEMO_QUESTIONS, displayLabel, toneOf } from "./config.js";
 
 const NAV_ICONS = {
   overview: "layout-dashboard",
@@ -26,7 +26,7 @@ export function StatCard({ html, title, value, detail, tone = "neutral", icon = 
   `;
 }
 
-export function Layout({ html, page, setPage, children }) {
+export function Layout({ html, page, setPage, navItems, currentUser, onLogout, children }) {
   useLucide([page, children]);
 
   return html`
@@ -42,8 +42,21 @@ export function Layout({ html, page, setPage, children }) {
           </p>
         </div>
 
+        ${currentUser
+          ? html`
+              <div className="side-note">
+                <div className="eyebrow">当前账号</div>
+                <strong>${currentUser.display_name}</strong>
+                <div className="subtle">${displayLabel(currentUser.role)} / ${currentUser.department || "未设置部门"}</div>
+                <div className="button-row" style=${{ marginTop: "12px" }}>
+                  <button className="btn ghost small" onClick=${onLogout}>退出登录</button>
+                </div>
+              </div>
+            `
+          : null}
+
         <nav className="nav-list">
-          ${NAV_ITEMS.map(
+          ${(navItems || []).map(
             (item) => html`
               <button
                 key=${item.id}
