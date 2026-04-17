@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.common import Citation
+from app.schemas.common import Citation, ToolCallRead
 
 
 class QueryRequest(BaseModel):
@@ -12,6 +12,7 @@ class QueryRequest(BaseModel):
     session_id: str | None = None
     user_role: str = "manager"
     top_k: int = Field(default=5, ge=1, le=10)
+    tool_sequence: list[str] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
@@ -22,6 +23,7 @@ class QueryResponse(BaseModel):
     trace_id: str
     next_action: str
     intent: str
+    tool_calls: list[ToolCallRead] = Field(default_factory=list)
     debug_summary: dict[str, object] = Field(default_factory=dict)
 
 

@@ -211,6 +211,16 @@ class DocumentRepository:
         db.flush()
         return task
 
+    def delete_documents(self, db: Session, document_ids: Iterable[str]) -> int:
+        ids = [document_id for document_id in document_ids if document_id]
+        if not ids:
+            return 0
+        db.execute(delete(Chunk).where(Chunk.document_id.in_(ids)))
+        db.execute(delete(IndexingTask).where(IndexingTask.document_id.in_(ids)))
+        result = db.execute(delete(Document).where(Document.id.in_(ids)))
+        db.flush()
+        return int(result.rowcount or 0)
+
     def fetch_chunks(self, db: Session) -> list[tuple[Chunk, Document]]:
         statement = (
             select(Chunk, Document)

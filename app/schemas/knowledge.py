@@ -47,8 +47,25 @@ class ReindexRequest(BaseModel):
     document_ids: list[str] = Field(default_factory=list)
 
 
+class DeleteKnowledgeSourcesRequest(BaseModel):
+    document_ids: list[str] = Field(default_factory=list)
+
+
 class ReindexResponse(BaseModel):
     reindexed: int
     failed: int
     skipped: int
     task_ids: list[str] = Field(default_factory=list)
+
+
+class DeleteKnowledgeSourcesResponse(BaseModel):
+    deleted: int
+    skipped: int
+    protected_titles: list[str] = Field(default_factory=list)
+
+
+class ProcurementBaselineRebuildResponse(BaseModel):
+    removed_documents: int
+    uploaded_documents: int
+    task_ids: list[str] = Field(default_factory=list)
+    retained_titles: list[str] = Field(default_factory=list)

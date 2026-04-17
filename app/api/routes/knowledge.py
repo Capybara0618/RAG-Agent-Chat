@@ -5,7 +5,16 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, get_ingestion_service, require_roles
 from app.schemas.auth import UserProfileRead
-from app.schemas.knowledge import IndexingTaskRead, KnowledgeSourceRead, KnowledgeUploadResponse, ReindexRequest, ReindexResponse
+from app.schemas.knowledge import (
+    DeleteKnowledgeSourcesRequest,
+    DeleteKnowledgeSourcesResponse,
+    IndexingTaskRead,
+    KnowledgeSourceRead,
+    KnowledgeUploadResponse,
+    ProcurementBaselineRebuildResponse,
+    ReindexRequest,
+    ReindexResponse,
+)
 from app.services.ingestion.service import IngestionService
 
 
@@ -76,6 +85,20 @@ async def upload_source(
     return response
 
 
+@router.post("/delete", response_model=DeleteKnowledgeSourcesResponse)
+def delete_sources(
+    payload: DeleteKnowledgeSourcesRequest,
+    db: Session = Depends(get_db),
+    ingestion_service: IngestionService = Depends(get_ingestion_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
+) -> DeleteKnowledgeSourcesResponse:
+    if not payload.document_ids:
+        raise HTTPException(status_code=400, detail="Please provide at least one document id.")
+    response = ingestion_service.delete_sources(db, payload.document_ids)
+    db.commit()
+    return response
+
+
 @router.post("/reindex", response_model=ReindexResponse)
 def reindex_sources(
     payload: ReindexRequest,
@@ -85,6 +108,20 @@ def reindex_sources(
     _: UserProfileRead = Depends(require_roles("admin")),
 ) -> ReindexResponse:
     response = ingestion_service.reindex(db, payload.document_ids)
+    db.commit()
+    for task_id in response.task_ids:
+        background_tasks.add_task(ingestion_service.run_indexing_task, task_id)
+    return response
+
+
+@router.post("/procurement-baseline/rebuild", response_model=ProcurementBaselineRebuildResponse)
+def rebuild_procurement_baseline(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    ingestion_service: IngestionService = Depends(get_ingestion_service),
+    _: UserProfileRead = Depends(require_roles("admin")),
+) -> ProcurementBaselineRebuildResponse:
+    response = ingestion_service.rebuild_procurement_baseline(db)
     db.commit()
     for task_id in response.task_ids:
         background_tasks.add_task(ingestion_service.run_indexing_task, task_id)

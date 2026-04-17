@@ -117,6 +117,9 @@ class VendorCandidateCreate(BaseModel):
     vendor_name: str
     source_platform: str = ""
     source_url: str = ""
+    contact_name: str = ""
+    contact_email: str = ""
+    contact_phone: str = ""
     profile_summary: str = ""
     procurement_notes: str = ""
 
@@ -131,8 +134,12 @@ class ProcurementAgentReviewRequest(BaseModel):
     vendor_name: str
     source_platform: str = ""
     source_url: str = ""
+    contact_name: str = ""
+    contact_email: str = ""
+    contact_phone: str = ""
     profile_summary: str = ""
     procurement_notes: str = ""
+    supplier_profile: SupplierProfileRead | None = None
     focus_points: str = ""
     user_role: str = "procurement"
     top_k: int = Field(default=6, ge=1, le=10)
@@ -143,6 +150,51 @@ class ProcurementMaterialRead(BaseModel):
     source_type: str
     char_count: int
     excerpt: str = ""
+    text: str = ""
+    file_size: int = 0
+    stored_name: str = ""
+
+
+class SupplierProfileRead(BaseModel):
+    extraction_mode: str = "rules_only"
+    confidence: float = 0.0
+    vendor_name: str = ""
+    company_summary: str = ""
+    products_services: str = ""
+    data_involvement: str = ""
+    security_signals: list[str] = Field(default_factory=list)
+    compliance_signals: list[str] = Field(default_factory=list)
+    legal_signals: list[str] = Field(default_factory=list)
+    source_urls: list[str] = Field(default_factory=list)
+    missing_materials: list[str] = Field(default_factory=list)
+    recommended_focus: str = ""
+
+
+class ProcurementMaterialGateRead(BaseModel):
+    decision: str = "fail"
+    relevance_score: float = 0.0
+    matched_material_types: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+
+
+class ProcurementRequirementCheckRead(BaseModel):
+    key: str
+    label: str
+    status: str
+    required: bool = True
+    evidence_titles: list[str] = Field(default_factory=list)
+    detail: str = ""
+
+
+class SupplierDossierRead(BaseModel):
+    vendor_name: str = ""
+    legal_entity: str = ""
+    service_model: str = ""
+    source_urls: list[str] = Field(default_factory=list)
+    data_access_level: str = "unknown"
+    hosting_region: str = ""
+    subprocessor_signal: str = "unknown"
+    security_signal_summary: list[str] = Field(default_factory=list)
 
 
 class ProcurementAgentExtractResult(BaseModel):
@@ -150,6 +202,27 @@ class ProcurementAgentExtractResult(BaseModel):
     extraction_summary: str
     extracted_materials: list[ProcurementMaterialRead] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    supplier_profile: SupplierProfileRead | None = None
+    material_gate: ProcurementMaterialGateRead | None = None
+    requirement_checks: list[ProcurementRequirementCheckRead] = Field(default_factory=list)
+    supplier_dossier: SupplierDossierRead | None = None
+
+
+class ProcurementMaterialSessionRead(BaseModel):
+    vendor_draft: VendorCandidateCreate
+    extraction_summary: str
+    extracted_materials: list[ProcurementMaterialRead] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    supplier_profile: SupplierProfileRead | None = None
+    material_gate: ProcurementMaterialGateRead | None = None
+    requirement_checks: list[ProcurementRequirementCheckRead] = Field(default_factory=list)
+    supplier_dossier: SupplierDossierRead | None = None
+    focus_points: str = ""
+
+
+class ProcurementAgentRunRequest(BaseModel):
+    focus_points: str = ""
+    top_k: int = Field(default=6, ge=1, le=10)
 
 
 class VendorSelectRequest(BaseModel):
@@ -158,7 +231,7 @@ class VendorSelectRequest(BaseModel):
 
 
 class ProjectLegalReviewRequest(BaseModel):
-    query: str
+    query: str = ""
     user_role: str = "legal"
     top_k: int = Field(default=6, ge=1, le=10)
 
@@ -204,6 +277,13 @@ class StructuredReviewRead(BaseModel):
     conclusion: str
     recommendation: str
     summary: str
+    risk_level: str = "medium"
+    decision_suggestion: str = ""
+    next_step: str = ""
+    legal_handoff_recommendation: str = "hold_for_procurement"
+    legal_handoff_reason: str = ""
+    clause_gaps: list[str] = Field(default_factory=list)
+    blocking_issues: list[str] = Field(default_factory=list)
     check_items: list[StructuredCheckItemRead] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
@@ -218,6 +298,9 @@ class VendorCandidateRead(BaseModel):
     vendor_name: str
     source_platform: str
     source_url: str
+    contact_name: str
+    contact_email: str
+    contact_phone: str
     profile_summary: str
     procurement_notes: str
     ai_review_summary: str
@@ -248,6 +331,33 @@ class ProjectArtifactRead(BaseModel):
     notes: str
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectArtifactPreviewRead(BaseModel):
+    artifact_id: str
+    document_id: str
+    title: str
+    source_title: str = ""
+    text_content: str = ""
+    content_excerpt: str = ""
+
+
+class LegalHandoffRead(BaseModel):
+    vendor_id: str
+    vendor_name: str
+    contact_name: str
+    contact_email: str
+    contact_phone: str
+    source_url: str
+    our_contract_status: str = "missing"
+    our_contract_notes: str = ""
+    counterparty_contract_status: str = "missing"
+    counterparty_contract_notes: str = ""
+    standard_contract_status: str
+    standard_contract_notes: str
+    vendor_redline_status: str
+    vendor_redline_notes: str
+    ready_for_legal_review: bool = False
 
 
 class ProjectRiskRead(BaseModel):
@@ -358,7 +468,9 @@ class ProjectDetailRead(BaseModel):
     application_form_ready: bool = False
     application_form_summary: str = ""
     application_checks: list[RequirementCheckRead] = Field(default_factory=list)
+    procurement_material_session: ProcurementMaterialSessionRead | None = None
     latest_legal_review: StructuredReviewRead | None = None
+    legal_handoff: LegalHandoffRead | None = None
     blocker_summary: list[str] = Field(default_factory=list)
     tasks: list[ProjectTaskRead] = Field(default_factory=list)
     vendors: list[VendorCandidateRead] = Field(default_factory=list)
@@ -392,6 +504,23 @@ class ProcurementAgentReviewResult(BaseModel):
     review: QueryResponse
     assessment: StructuredReviewRead
     generated_query: str
+    material_gate: ProcurementMaterialGateRead | None = None
+    requirement_checks: list[ProcurementRequirementCheckRead] = Field(default_factory=list)
+    supplier_dossier: SupplierDossierRead | None = None
+
+
+class ProcurementAgentRunResult(BaseModel):
+    vendor_draft: VendorCandidateCreate
+    extraction_summary: str
+    extracted_materials: list[ProcurementMaterialRead] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    supplier_profile: SupplierProfileRead | None = None
+    review: QueryResponse
+    assessment: StructuredReviewRead
+    generated_query: str
+    material_gate: ProcurementMaterialGateRead | None = None
+    requirement_checks: list[ProcurementRequirementCheckRead] = Field(default_factory=list)
+    supplier_dossier: SupplierDossierRead | None = None
 
 
 class ProjectLegalReviewResult(BaseModel):

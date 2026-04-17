@@ -63,6 +63,7 @@ def create_container(settings: Settings) -> AppContainer:
     project_service = ProjectService(
         repository=ProjectRepository(),
         agent_service=agent_service,
+        storage_dir=settings.storage_dir,
     )
     return AppContainer(
         settings=settings,

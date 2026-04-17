@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user, get_db, get_project_service
+from app.api.dependencies import get_current_user, get_db, get_ingestion_service, get_project_service
 from app.schemas.auth import UserProfileRead
 from app.schemas.project import (
     ProcurementAgentExtractResult,
+    ProcurementAgentRunResult,
     ProcurementAgentReviewRequest,
     ProcurementAgentReviewResult,
     ProjectArtifactCreate,
+    ProjectArtifactPreviewRead,
     ProjectArtifactRead,
     ProjectArtifactUpdate,
     ProjectCancelRequest,
@@ -37,10 +41,12 @@ from app.schemas.project import (
     VendorReviewResult,
     VendorSelectRequest,
 )
+from app.services.ingestion.service import IngestionService
 from app.services.project_service import ProjectService
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+LEGAL_CONTRACT_UPLOAD_SUFFIXES = {".md", ".markdown", ".docx"}
 
 
 @router.get("", response_model=list[ProjectSummaryRead])
@@ -229,6 +235,85 @@ def update_task(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/{project_id}/artifacts/{artifact_id}/upload", response_model=ProjectArtifactRead)
+async def upload_project_artifact(
+    project_id: str,
+    artifact_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    project_service: ProjectService = Depends(get_project_service),
+    ingestion_service: IngestionService = Depends(get_ingestion_service),
+    current_user: UserProfileRead = Depends(get_current_user),
+) -> ProjectArtifactRead:
+    try:
+        project_service.assert_can_work_on_current_stage(db, project_id, current_user)
+        project_service.get_project_detail_for_user(db, project_id, current_user)
+        artifact = project_service.repository.get_artifact(db, artifact_id)
+        if artifact is None or artifact.project_id != project_id:
+            raise ValueError("Project artifact not found.")
+
+        original_name = Path(file.filename or "contract.bin").name
+        suffix = Path(original_name).suffix.lower()
+        if suffix not in LEGAL_CONTRACT_UPLOAD_SUFFIXES:
+            raise ValueError("Legal contract upload currently supports only .md and .docx files.")
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise ValueError("Uploaded file is empty.")
+
+        stored_name = f"{project_id}_{artifact_id}_{original_name}"
+        stored_path = ingestion_service.persist_upload(stored_name, file_bytes)
+        source = ingestion_service.submit_ingestion(
+            db,
+            name=f"[{project_id[:8]}] {artifact.title}{suffix}",
+            data=file_bytes,
+            allowed_roles="manager,procurement,legal,admin",
+            tags=f"project_artifact,{project_id},{artifact.artifact_type},legal_contract",
+            source_path=stored_path,
+        )
+        db.commit()
+        if not source.duplicate:
+            ingestion_service.run_indexing_task(source.task_id)
+
+        artifact_note = (
+            f"已上传文件：{original_name}。请以此版本作为法务对比基准。"
+            if artifact.artifact_type == "our_procurement_contract"
+            else f"已上传文件：{original_name}。系统将把该版本与我方采购合同逐条对比。"
+            if artifact.artifact_type == "counterparty_redline_contract"
+            else f"已上传文件：{original_name}。"
+        )
+        return project_service.update_artifact(
+            db,
+            project_id,
+            artifact_id,
+            ProjectArtifactUpdate(
+                status="provided",
+                document_id=source.source.id,
+                notes=artifact_note,
+            ),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/artifacts/{artifact_id}/preview", response_model=ProjectArtifactPreviewRead)
+def get_project_artifact_preview(
+    project_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db),
+    project_service: ProjectService = Depends(get_project_service),
+    current_user: UserProfileRead = Depends(get_current_user),
+) -> ProjectArtifactPreviewRead:
+    try:
+        project_service.get_project_detail_for_user(db, project_id, current_user)
+        return project_service.get_artifact_preview(db, project_id, artifact_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/{project_id}/vendors", response_model=VendorCandidateRead)
 def create_vendor(
     project_id: str,
@@ -286,6 +371,36 @@ async def procurement_agent_extract(
             db,
             project_id,
             uploaded_files=uploaded_files,
+            current_user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/procurement-agent-run", response_model=ProcurementAgentRunResult)
+async def procurement_agent_run(
+    project_id: str,
+    files: list[UploadFile] = File(...),
+    focus_points: str = Form(""),
+    top_k: int = Form(6),
+    db: Session = Depends(get_db),
+    project_service: ProjectService = Depends(get_project_service),
+    current_user: UserProfileRead = Depends(get_current_user),
+) -> ProcurementAgentRunResult:
+    try:
+        project_service.assert_can_manage_stage(db, project_id, current_user, "review_vendor")
+        uploaded_files = []
+        for item in files:
+            if item.filename:
+                uploaded_files.append((item.filename, await item.read()))
+        return project_service.procurement_agent_run_from_materials(
+            db,
+            project_id,
+            uploaded_files=uploaded_files,
+            focus_points=focus_points,
+            top_k=top_k,
             current_user=current_user,
         )
     except PermissionError as exc:

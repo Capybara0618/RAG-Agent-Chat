@@ -11,6 +11,14 @@ class LLMProvider(Protocol):
 
     def build_retrieval_plan(self, query: str, intent: str, top_k: int) -> dict[str, object]: ...
 
+    def extract_supplier_profile(
+        self,
+        *,
+        project_context: dict[str, str],
+        combined_text: str,
+        material_names: list[str],
+    ) -> dict[str, object] | None: ...
+
     def compose_answer(
         self,
         *,

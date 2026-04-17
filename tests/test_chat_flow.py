@@ -18,6 +18,8 @@ def test_query_returns_citations_trace_and_debug_summary(client, auth_headers):
     assert payload["citations"]
     assert payload["trace_id"]
     assert payload["next_action"] in {"answer", "clarify", "refuse"}
+    assert payload["tool_calls"]
+    assert payload["debug_summary"]["tool_calls"]
     assert "retrieval" in payload["debug_summary"]
     assert "verification" in payload["debug_summary"]
 

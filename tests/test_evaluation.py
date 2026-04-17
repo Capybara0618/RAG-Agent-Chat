@@ -8,9 +8,9 @@ def test_evaluation_case_crud_and_filtered_run(client, auth_headers):
         "/eval/cases",
         headers=admin_headers,
         json={
-            "question": "Compare the standard MSA with the vendor redline version on core legal clauses.",
-            "expected_answer": "The vendor redline weakens liability and omits several core clauses such as audit rights or termination protections.",
-            "expected_document_title": "procurement_cn_standard_msa_template.md",
+            "question": "比较标准主服务协议与供应商回传红线版本在核心条款上的差异。",
+            "expected_answer": "供应商回传版本弱化了责任上限，并放松了数据处理和安全事件通知约束。",
+            "expected_document_title": "法务核心-标准主服务协议模板.md",
             "task_type": "compare",
             "required_role": "manager",
             "knowledge_domain": "contract_review",

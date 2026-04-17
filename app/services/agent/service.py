@@ -49,6 +49,7 @@ class KnowledgeOpsAgentService:
                 "session_id": session.id,
                 "user_role": current_user.role,
                 "top_k": request.top_k,
+                "requested_tools": list(request.tool_sequence or []),
                 "history": [{"role": msg.role, "content": msg.content} for msg in history_messages[-6:]],
                 "trace_id": trace_id,
                 "trace_steps": [],
@@ -86,6 +87,7 @@ class KnowledgeOpsAgentService:
             trace_id=trace_id,
             next_action=str(state.get("next_action", "answer")),
             intent=str(state.get("intent", "qa")),
+            tool_calls=list(state.get("tool_calls", [])),
             debug_summary=debug_summary,
         )
 

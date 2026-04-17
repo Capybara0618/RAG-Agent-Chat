@@ -12,6 +12,7 @@ RUNTIME_COLUMN_PATCHES: dict[str, dict[str, str]] = {
         "selected_vendor_id": "VARCHAR(36) DEFAULT ''",
         "business_value": "TEXT DEFAULT ''",
         "target_go_live_date": "VARCHAR(20) DEFAULT ''",
+        "procurement_materials_json": "TEXT DEFAULT '{}'",
     },
     "project_stage_records": {
         "from_stage": "VARCHAR(50) DEFAULT ''",
@@ -35,6 +36,9 @@ RUNTIME_COLUMN_PATCHES: dict[str, dict[str, str]] = {
     },
     "vendor_candidates": {
         "ai_review_json": "TEXT DEFAULT '{}'",
+        "contact_name": "VARCHAR(120) DEFAULT ''",
+        "contact_email": "VARCHAR(255) DEFAULT ''",
+        "contact_phone": "VARCHAR(80) DEFAULT ''",
     },
     "project_risks": {
         "linked_vendor_id": "VARCHAR(36) DEFAULT ''",
@@ -142,7 +146,7 @@ def _normalize_legacy_procurement_stages(engine) -> None:
         "draft": "business_draft",
         "vendor_onboarding": "manager_review",
         "security_review": "procurement_sourcing",
-        "approval": "final_approval",
+        "approval": "signing",
     }
     owner_mapping = {
         "business": "business",

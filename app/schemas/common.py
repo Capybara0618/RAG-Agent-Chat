@@ -14,6 +14,14 @@ class Citation(BaseModel):
     score_breakdown: dict[str, float] = Field(default_factory=dict)
 
 
+class ToolCallRead(BaseModel):
+    tool_name: str
+    purpose: str = ""
+    status: str = "success"
+    input_summary: str = ""
+    output_summary: str = ""
+
+
 class TraceStepRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -16,9 +16,36 @@ import { DEMO_ACCOUNTS, DEMO_QUESTIONS, navItemsFor } from "./config.js";
 import { Layout } from "./components.js";
 import { AssistantPage, AuditPage } from "./pages-assistant-audit.js";
 import { KnowledgePage, OverviewPage } from "./pages-overview-knowledge.js";
-import { ProjectsPage } from "./pages-projects.js";
 
 const html = htm.bind(React.createElement);
+
+class RootErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("Root render failed", error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return html`
+        <div className="center-panel" style=${{ maxWidth: "960px" }}>
+          <h2>页面渲染失败</h2>
+          <p className="muted">${String(this.state.error?.message || this.state.error)}</p>
+          <pre className="code-block" style=${{ whiteSpace: "pre-wrap", textAlign: "left" }}>${String(this.state.error?.stack || "")}</pre>
+        </div>
+      `;
+    }
+    return this.props.children;
+  }
+}
 
 function LoginPage({ html, accounts, onLogin }) {
   const [form, setForm] = useState({ username: "business", password: "business" });
@@ -87,6 +114,7 @@ function LoginPage({ html, accounts, onLogin }) {
 
 function App() {
   const [page, setPage] = useState("overview");
+  const [projectNavigationRequest, setProjectNavigationRequest] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [demoAccounts, setDemoAccounts] = useState(DEMO_ACCOUNTS);
   const [sources, setSources] = useState([]);
@@ -98,6 +126,8 @@ function App() {
   const [draftQuestion, setDraftQuestion] = useState(DEMO_QUESTIONS[1]);
   const [assistantTask, setAssistantTask] = useState(null);
   const [assistantResult, setAssistantResult] = useState(null);
+  const [projectsPageComponent, setProjectsPageComponent] = useState(null);
+  const [projectsPageError, setProjectsPageError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -205,6 +235,7 @@ function App() {
     setDraftQuestion(DEMO_QUESTIONS[1]);
     setAssistantTask(null);
     setAssistantResult(null);
+    setProjectNavigationRequest(null);
     setError("");
     clearStoredTaskIds();
     setPage("overview");
@@ -228,6 +259,30 @@ function App() {
     }
     refreshAll();
   }, [currentUser]);
+
+  useEffect(() => {
+    if (page !== "projects") return;
+    if (projectsPageComponent || projectsPageError) return;
+    let cancelled = false;
+    import("./pages-projects.js")
+      .then((module) => {
+        if (cancelled) return;
+        setProjectsPageComponent(() => module.ProjectsPage);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setProjectsPageError(err?.message || String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [page, projectsPageComponent, projectsPageError]);
+
+  function openProjectWorkspace(projectId) {
+    if (!projectId) return;
+    setProjectNavigationRequest({ projectId, nonce: Date.now() });
+    setPage("projects");
+  }
 
   function renderPage() {
     if (!currentUser) {
@@ -269,6 +324,23 @@ function App() {
     }
 
     if (page === "projects") {
+      if (projectsPageError) {
+        return html`
+          <div className="center-panel">
+            <h3>采购执行页加载失败</h3>
+            <p className="muted">${projectsPageError}</p>
+          </div>
+        `;
+      }
+      if (!projectsPageComponent) {
+        return html`
+          <div className="center-panel">
+            <div className="loading-ring"></div>
+            <h3>正在加载采购执行页</h3>
+          </div>
+        `;
+      }
+      const ProjectsPage = projectsPageComponent;
       return html`
         <${ProjectsPage}
           html=${html}
@@ -278,8 +350,10 @@ function App() {
           onNavigate=${setPage}
           setDraftQuestion=${setDraftQuestion}
           assistantTask=${assistantTask}
+          assistantResult=${assistantResult}
           setAssistantTask=${setAssistantTask}
           setAssistantResult=${setAssistantResult}
+          projectNavigationRequest=${projectNavigationRequest}
           onTraceCreated=${(traceId) => setLatestTraceId(traceId)}
         />
       `;
@@ -326,6 +400,7 @@ function App() {
         cases=${cases}
         projects=${projects}
         setPage=${setPage}
+        openProjectWorkspace=${openProjectWorkspace}
         setDraftQuestion=${setDraftQuestion}
       />
     `;
@@ -349,4 +424,4 @@ function App() {
   `;
 }
 
-createRoot(document.getElementById("root")).render(html`<${App} />`);
+createRoot(document.getElementById("root")).render(html`<${RootErrorBoundary}><${App} /></${RootErrorBoundary}>`);

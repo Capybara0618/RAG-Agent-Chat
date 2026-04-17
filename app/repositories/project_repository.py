@@ -141,6 +141,9 @@ class ProjectRepository:
         vendor_name: str,
         source_platform: str,
         source_url: str,
+        contact_name: str,
+        contact_email: str,
+        contact_phone: str,
         profile_summary: str,
         procurement_notes: str,
     ) -> VendorCandidate:
@@ -149,6 +152,9 @@ class ProjectRepository:
             vendor_name=vendor_name,
             source_platform=source_platform,
             source_url=source_url,
+            contact_name=contact_name,
+            contact_email=contact_email,
+            contact_phone=contact_phone,
             profile_summary=profile_summary,
             procurement_notes=procurement_notes,
         )

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
+
+import httpx
 
 from app.schemas.common import Citation
 from app.services.agent.providers import LLMProvider
@@ -8,7 +11,7 @@ from app.services.retrieval.embeddings import tokenize_text
 from app.services.retrieval.service import RetrievedChunk
 
 
-SENTENCE_PATTERN = re.compile(r"(?<=[.!?。！？])\s*")
+SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s*")
 
 
 class LLMClient(LLMProvider):
@@ -83,6 +86,52 @@ class LLMClient(LLMProvider):
             "domain_labels": procurement_hints["domain_labels"],
         }
 
+    def extract_supplier_profile(
+        self,
+        *,
+        project_context: dict[str, str],
+        combined_text: str,
+        material_names: list[str],
+    ) -> dict[str, object] | None:
+        if not self.api_key:
+            return None
+
+        source_text = combined_text.strip()
+        if not source_text:
+            return None
+
+        system_prompt = (
+            "You extract supplier onboarding information for procurement review. "
+            "Return only valid JSON. Do not add markdown fences."
+        )
+        user_prompt = (
+            "Read the supplier materials and produce a structured summary for procurement review.\n"
+            "Project context:\n"
+            f"- title: {project_context.get('title', '')}\n"
+            f"- category: {project_context.get('category', '')}\n"
+            f"- data_scope: {project_context.get('data_scope', '')}\n"
+            f"- department: {project_context.get('department', '')}\n"
+            f"- material_names: {', '.join(material_names[:8])}\n\n"
+            "Return a JSON object with these keys:\n"
+            "vendor_name, company_summary, products_services, data_involvement, "
+            "security_signals, compliance_signals, legal_signals, source_urls, missing_materials, "
+            "recommended_focus, confidence.\n\n"
+            "Supplier materials:\n"
+            f"{source_text[:16000]}"
+        )
+
+        try:
+            content = self._chat_json(system_prompt=system_prompt, user_prompt=user_prompt)
+        except Exception:
+            return None
+        if not content:
+            return None
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def compose_answer(
         self,
         *,
@@ -144,6 +193,32 @@ class LLMClient(LLMProvider):
         if overlap < 0.18:
             return 0.36, "clarify", debug
         return min(0.92, 0.58 + overlap), "answer", debug
+
+    def _chat_json(self, *, system_prompt: str, user_prompt: str) -> str:
+        base_url = self.api_base.rstrip("/") if self.api_base else "https://api.openai.com/v1"
+        url = f"{base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model or "gpt-4.1-mini",
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+        data = response.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        return str(message.get("content") or "").strip()
 
     def _compose_compare_answer(
         self,

@@ -4,6 +4,14 @@ import { DEMO_FILES, DEMO_QUESTIONS, displayLabel, toneOf } from "./config.js";
 import { apiGet, apiPost } from "./api.js";
 import { ActivityList, StatCard } from "./components.js";
 
+function formatCurrency(amount, currency) {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: currency || "CNY",
+    maximumFractionDigits: 0,
+  }).format(amount || 0);
+}
+
 export function OverviewPage({
   html,
   currentUser,
@@ -13,13 +21,310 @@ export function OverviewPage({
   cases,
   projects,
   setPage,
+  openProjectWorkspace,
   setDraftQuestion,
 }) {
-  const indexedSources = sources.filter((item) => item.status === "indexed").length;
-  const runningTasks = tasks.filter((item) => ["uploaded", "indexing"].includes(item.status)).length;
-  const failedTraces = traces.filter((item) => item.has_failure).length;
-  const compareCases = cases.filter((item) => item.task_type === "compare").length;
-  const activeProjects = projects.filter((item) => item.status === "active").length;
+  const safeSources = Array.isArray(sources) ? sources : [];
+  const safeTasks = Array.isArray(tasks) ? tasks : [];
+  const safeTraces = Array.isArray(traces) ? traces : [];
+  const safeCases = Array.isArray(cases) ? cases : [];
+  const safeProjects = Array.isArray(projects) ? projects : [];
+
+  const indexedSources = safeSources.filter((item) => item.status === "indexed").length;
+  const runningTasks = safeTasks.filter((item) => ["uploaded", "indexing"].includes(item.status)).length;
+  const failedTraces = safeTraces.filter((item) => item.has_failure).length;
+  const compareCases = safeCases.filter((item) => item.task_type === "compare").length;
+  const activeProjects = safeProjects.filter((item) => item.status === "active").length;
+  const procurementPendingProjects = safeProjects.filter((item) => item.status === "active" && item.current_stage === "procurement_sourcing");
+  const businessDraftProjects = safeProjects.filter((item) => item.status === "active" && item.current_stage === "business_draft");
+  const businessSubmittedToManagerProjects = safeProjects.filter((item) =>
+    ["manager_review", "procurement_sourcing", "legal_review", "final_approval", "signing", "completed"].includes(item.current_stage) &&
+    item.status !== "cancelled",
+  );
+  const managerPendingProjects = safeProjects.filter((item) => item.status === "active" && item.current_stage === "manager_review");
+  const managerApprovedProjects = safeProjects.filter((item) =>
+    ["procurement_sourcing", "legal_review", "final_approval", "signing", "completed"].includes(item.current_stage) &&
+    item.status !== "cancelled",
+  );
+  const procurementLegalSubmittedProjects = safeProjects.filter((item) =>
+    item.selected_vendor_id &&
+    ["legal_review", "final_approval", "signing", "completed"].includes(item.current_stage) &&
+    item.status !== "cancelled",
+  );
+  const legalPendingProjects = safeProjects.filter((item) => item.status === "active" && item.current_stage === "legal_review");
+  const legalApprovedProjects = safeProjects.filter((item) =>
+    item.selected_vendor_id &&
+    ["final_approval", "signing", "completed"].includes(item.current_stage) &&
+    item.status !== "cancelled",
+  );
+
+  if (currentUser?.role === "business") {
+    return html`
+      <div>
+        <div className="topbar">
+          <div>
+            <h2>业务总览</h2>
+            <p>这里只保留业务最常看的两类项目：正在起草的申请，以及已经提交给上级审批的项目。</p>
+          </div>
+        </div>
+
+        <section className="section-block">
+          <div className="projects-layout">
+            <section className="panel">
+              <div className="section-title-row">
+                <h3>1. 正在起草的业务</h3>
+                <div className="subtle">${businessDraftProjects.length} 个项目</div>
+              </div>
+              ${businessDraftProjects.length
+                ? html`
+                    <div className="stack-list">
+                      ${businessDraftProjects.map((item) => html`
+                        <div key=${item.id} className="activity-item">
+                          <div className="activity-main">
+                            <strong>${item.title}</strong>
+                            <div className="subtle">${item.department || "未标注部门"} / ${formatCurrency(item.budget_amount, item.currency)} / ${displayLabel(item.current_stage)}</div>
+                          </div>
+                          <div className="activity-meta">
+                            <span className="status-badge ${toneOf(item.status)}">${displayLabel(item.status)}</span>
+                            <button className="btn ghost small" onClick=${() => openProjectWorkspace?.(item.id)}>查看详情</button>
+                          </div>
+                        </div>
+                      `)}
+                    </div>
+                  `
+                : html`<div className="empty-box">当前没有正在起草的业务申请。</div>`}
+            </section>
+
+            <section className="panel">
+              <div className="section-title-row">
+                <h3>2. 已交给上级审批</h3>
+                <div className="subtle">${businessSubmittedToManagerProjects.length} 个项目</div>
+              </div>
+              ${businessSubmittedToManagerProjects.length
+                ? html`
+                    <div className="stack-list">
+                      ${businessSubmittedToManagerProjects.map((item) => html`
+                        <div key=${item.id} className="activity-item">
+                          <div className="activity-main">
+                            <strong>${item.title}</strong>
+                            <div className="subtle">${item.department || "未标注部门"} / ${item.vendor_name || "待确认供应商"} / ${displayLabel(item.current_stage)}</div>
+                          </div>
+                          <div className="activity-meta">
+                            <span className="status-badge ${toneOf(item.status)}">${displayLabel(item.status)}</span>
+                            <button className="btn ghost small" onClick=${() => openProjectWorkspace?.(item.id)}>查看详情</button>
+                          </div>
+                        </div>
+                      `)}
+                    </div>
+                  `
+                : html`<div className="empty-box">当前还没有提交给上级审批的业务项目。</div>`}
+            </section>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  if (currentUser?.role === "procurement") {
+    return html`
+      <div>
+        <div className="topbar">
+          <div>
+            <h2>采购总览</h2>
+            <p>这里只保留你当前最需要关注的两类项目。</p>
+          </div>
+        </div>
+
+        <section className="section-block">
+          <div className="projects-layout">
+            <section className="panel">
+              <div className="section-title-row">
+                <h3>1. 业务部发起，待我审核</h3>
+                <div className="subtle">${procurementPendingProjects.length} 个项目</div>
+              </div>
+              ${procurementPendingProjects.length
+                ? html`
+                    <div className="stack-list">
+                      ${procurementPendingProjects.map((item) => html`
+                        <div key=${item.id} className="activity-item">
+                          <div className="activity-main">
+                            <strong>${item.title}</strong>
+                            <div className="subtle">${item.department || "未标注部门"} / ${item.vendor_name || "待确认供应商"} / ${displayLabel(item.current_stage)}</div>
+                          </div>
+                          <div className="activity-meta">
+                            <span className="status-badge ${toneOf(item.status)}">${displayLabel(item.status)}</span>
+                            <button className="btn ghost small" onClick=${() => openProjectWorkspace?.(item.id)}>进入采购执行</button>
+                          </div>
+                        </div>
+                      `)}
+                    </div>
+                  `
+                : html`<div className="empty-box">当前没有待你审核的采购项目。</div>`}
+            </section>
+
+            <section className="panel">
+              <div className="section-title-row">
+                <h3>2. 已通过并提交法务</h3>
+                <div className="subtle">${procurementLegalSubmittedProjects.length} 个项目</div>
+              </div>
+              ${procurementLegalSubmittedProjects.length
+                ? html`
+                    <div className="stack-list">
+                      ${procurementLegalSubmittedProjects.map((item) => html`
+                        <div key=${item.id} className="activity-item">
+                          <div className="activity-main">
+                            <strong>${item.title}</strong>
+                            <div className="subtle">${item.vendor_name || "已选供应商"} / ${displayLabel(item.current_stage)}</div>
+                          </div>
+                          <div className="activity-meta">
+                            <span className="status-badge ${toneOf(item.status)}">${displayLabel(item.status)}</span>
+                            <button className="btn ghost small" onClick=${() => openProjectWorkspace?.(item.id)}>查看记录</button>
+                          </div>
+                        </div>
+                      `)}
+                    </div>
+                  `
+                : html`<div className="empty-box">当前还没有已通过采购并提交法务的项目。</div>`}
+            </section>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  if (currentUser?.role === "manager") {
+    return html`
+      <div>
+        <div className="topbar">
+          <div>
+            <h2>上级总览</h2>
+            <p>这里只保留上级最常看的两类项目：待审批业务，以及已经批准并交给采购推进的项目。</p>
+          </div>
+        </div>
+
+        <section className="section-block">
+          <div className="projects-layout">
+            <section className="panel">
+              <div className="section-title-row">
+                <h3>1. 待我审批的业务</h3>
+                <div className="subtle">${managerPendingProjects.length} 个项目</div>
+              </div>
+              ${managerPendingProjects.length
+                ? html`
+                    <div className="stack-list">
+                      ${managerPendingProjects.map((item) => html`
+                        <div key=${item.id} className="activity-item">
+                          <div className="activity-main">
+                            <strong>${item.title}</strong>
+                            <div className="subtle">${item.department || "未标注部门"} / ${formatCurrency(item.budget_amount, item.currency)} / ${displayLabel(item.current_stage)}</div>
+                          </div>
+                          <div className="activity-meta">
+                            <span className="status-badge ${toneOf(item.status)}">${displayLabel(item.status)}</span>
+                            <button className="btn ghost small" onClick=${() => openProjectWorkspace?.(item.id)}>进入审批</button>
+                          </div>
+                        </div>
+                      `)}
+                    </div>
+                  `
+                : html`<div className="empty-box">当前没有待你审批的业务项目。</div>`}
+            </section>
+
+            <section className="panel">
+              <div className="section-title-row">
+                <h3>2. 已批准并交给采购</h3>
+                <div className="subtle">${managerApprovedProjects.length} 个项目</div>
+              </div>
+              ${managerApprovedProjects.length
+                ? html`
+                    <div className="stack-list">
+                      ${managerApprovedProjects.map((item) => html`
+                        <div key=${item.id} className="activity-item">
+                          <div className="activity-main">
+                            <strong>${item.title}</strong>
+                            <div className="subtle">${item.department || "未标注部门"} / ${item.vendor_name || "待确认供应商"} / ${displayLabel(item.current_stage)}</div>
+                          </div>
+                          <div className="activity-meta">
+                            <span className="status-badge ${toneOf(item.status)}">${displayLabel(item.status)}</span>
+                            <button className="btn ghost small" onClick=${() => openProjectWorkspace?.(item.id)}>查看详情</button>
+                          </div>
+                        </div>
+                      `)}
+                    </div>
+                  `
+                : html`<div className="empty-box">当前还没有已批准并进入采购流转的项目。</div>`}
+            </section>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  if (currentUser?.role === "legal") {
+    return html`
+      <div>
+        <div className="topbar">
+          <div>
+            <h2>法务总览</h2>
+            <p>这里只保留法务最常处理的两类项目：采购提交来的待审合同，以及已经完成法务审批的项目记录。</p>
+          </div>
+        </div>
+
+        <section className="section-block">
+          <div className="projects-layout">
+            <section className="panel">
+              <div className="section-title-row">
+                <h3>1. 采购部上传的申请</h3>
+                <div className="subtle">${legalPendingProjects.length} 个项目</div>
+              </div>
+              ${legalPendingProjects.length
+                ? html`
+                    <div className="stack-list">
+                      ${legalPendingProjects.map((item) => html`
+                        <div key=${item.id} className="activity-item">
+                          <div className="activity-main">
+                            <strong>${item.title}</strong>
+                            <div className="subtle">${item.department || "未标记部门"} / ${item.vendor_name || "待确认供应商"} / ${displayLabel(item.current_stage)}</div>
+                          </div>
+                          <div className="activity-meta">
+                            <span className="status-badge ${toneOf(item.status)}">${displayLabel(item.status)}</span>
+                            <button className="btn ghost small" onClick=${() => openProjectWorkspace?.(item.id)}>进入法务审核</button>
+                          </div>
+                        </div>
+                      `)}
+                    </div>
+                  `
+                : html`<div className="empty-box">当前没有待法务处理的采购合同。</div>`}
+            </section>
+
+            <section className="panel">
+              <div className="section-title-row">
+                <h3>2. 已通过的法务审批</h3>
+                <div className="subtle">${legalApprovedProjects.length} 个项目</div>
+              </div>
+              ${legalApprovedProjects.length
+                ? html`
+                    <div className="stack-list">
+                      ${legalApprovedProjects.map((item) => html`
+                        <div key=${item.id} className="activity-item">
+                          <div className="activity-main">
+                            <strong>${item.title}</strong>
+                            <div className="subtle">${item.vendor_name || "已选供应商"} / ${displayLabel(item.current_stage)}</div>
+                          </div>
+                          <div className="activity-meta">
+                            <span className="status-badge ${toneOf(item.status)}">${displayLabel(item.status)}</span>
+                            <button className="btn ghost small" onClick=${() => openProjectWorkspace?.(item.id)}>查看审批记录</button>
+                          </div>
+                        </div>
+                      `)}
+                    </div>
+                  `
+                : html`<div className="empty-box">当前还没有已完成法务审批的项目。</div>`}
+            </section>
+          </div>
+        </section>
+      </div>
+    `;
+  }
 
   return html`
     <div>
@@ -104,7 +409,7 @@ export function OverviewPage({
         <${StatCard}
           html=${html}
           title="\u77e5\u8bc6\u6e90"
-          value=${sources.length}
+          value=${safeSources.length}
           detail=${`\u5df2\u7d22\u5f15 ${indexedSources}`}
           tone="success"
           icon="database"
@@ -112,7 +417,7 @@ export function OverviewPage({
         <${StatCard}
           html=${html}
           title="\u91c7\u8d2d\u9879\u76ee"
-          value=${projects.length}
+          value=${safeProjects.length}
           detail=${`${activeProjects} \u4e2a\u6b63\u5728\u63a8\u8fdb`}
           tone=${activeProjects ? "success" : "neutral"}
           icon="workflow"
@@ -120,7 +425,7 @@ export function OverviewPage({
         <${StatCard}
           html=${html}
           title="\u7d22\u5f15\u4efb\u52a1"
-          value=${tasks.length}
+          value=${safeTasks.length}
           detail=${runningTasks ? `${runningTasks} \u4e2a\u8fd0\u884c\u4e2d` : "\u65e0\u6b63\u5728\u8fd0\u884c\u7684\u4efb\u52a1"}
           tone=${runningTasks ? "warn" : "neutral"}
           icon="loader"
@@ -128,7 +433,7 @@ export function OverviewPage({
         <${StatCard}
           html=${html}
           title="Trace / \u8bc4\u6d4b"
-          value=${traces.length}
+          value=${safeTraces.length}
           detail=${failedTraces ? `${failedTraces} \u6761\u5931\u8d25 Trace` : `${compareCases} \u9053\u5bf9\u6bd4\u7c7b\u9898\u76ee`}
           tone=${failedTraces ? "warn" : "neutral"}
           icon="shield-check"
@@ -189,7 +494,7 @@ export function OverviewPage({
             <div className="section-title-row"><h4>\u6700\u8fd1\u9879\u76ee</h4></div>
             <${ActivityList}
               html=${html}
-              items=${projects.slice(0, 5).map((item) => ({
+              items=${safeProjects.slice(0, 5).map((item) => ({
                 ...item,
                 title: item.title,
                 subtitle: `${item.vendor_name} / ${displayLabel(item.current_stage)}`,
@@ -204,7 +509,7 @@ export function OverviewPage({
             <div className="section-title-row"><h4>\u6700\u8fd1 Trace</h4></div>
             <${ActivityList}
               html=${html}
-              items=${traces.slice(0, 5)}
+              items=${safeTraces.slice(0, 5)}
               emptyText="\u6682\u65f6\u6ca1\u6709 Trace \u8bb0\u5f55\uff0c\u8bf7\u5148\u53d1\u8d77\u4e00\u6b21\u5ba1\u67e5\u3002"
               onPick=${() => setPage("audit")}
             />
@@ -216,6 +521,8 @@ export function OverviewPage({
 }
 
 export function KnowledgePage({ html, sources, tasks, refreshAll, rememberTask }) {
+  const safeSources = Array.isArray(sources) ? sources : [];
+  const safeTasks = Array.isArray(tasks) ? tasks : [];
   const [file, setFile] = useState(null);
   const [allowedRoles, setAllowedRoles] = useState("employee,admin");
   const [tags, setTags] = useState("procurement,legal,security");
@@ -223,6 +530,7 @@ export function KnowledgePage({ html, sources, tasks, refreshAll, rememberTask }
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [taskDetail, setTaskDetail] = useState(null);
+  const [deletingSourceId, setDeletingSourceId] = useState("");
 
   useEffect(() => {
     if (!taskDetail?.id || ["indexed", "failed"].includes(taskDetail.status)) return undefined;
@@ -280,6 +588,34 @@ export function KnowledgePage({ html, sources, tasks, refreshAll, rememberTask }
       refreshAll();
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  async function handleDeleteSource(source) {
+    if (!source?.id) return;
+    const tagSet = new Set(Array.isArray(source.tags) ? source.tags : []);
+    if (tagSet.has("project_artifact")) {
+      window.alert("项目合同工件不能在知识库总览中直接删除。");
+      return;
+    }
+    const confirmed = window.confirm(`确定删除知识库文档《${source.title || "未命名文档"}》吗？`);
+    if (!confirmed) return;
+    try {
+      setDeletingSourceId(source.id);
+      setError("");
+      const result = await apiPost("/knowledge/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document_ids: [source.id] }),
+      });
+      if (result.protected_titles?.length) {
+        window.alert(`以下文档受保护，未删除：${result.protected_titles.join(" / ")}`);
+      }
+      refreshAll();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingSourceId("");
     }
   }
 
@@ -353,20 +689,29 @@ export function KnowledgePage({ html, sources, tasks, refreshAll, rememberTask }
 
         <section className="panel">
           <div className="section-title-row"><h3>\u77e5\u8bc6\u6e90\u5217\u8868</h3></div>
-          ${sources.length
+          ${safeSources.length
             ? html`
                 <div className="stack-list">
-                  ${sources.map(
+                  ${safeSources.map(
                     (source) => html`
                       <div className="activity-item" key=${source.id}>
                         <div className="activity-main">
                           <strong>${source.title}</strong>
                           <div className="subtle">${source.source_type} / v${source.version}</div>
+                          ${source.tags?.length ? html`<div className="subtle">标签：${source.tags.join(" / ")}</div>` : null}
                         </div>
                         <div className="activity-meta">
                           <span className="status-badge ${toneOf(source.status)}">
                             ${displayLabel(source.status)}
                           </span>
+                          <button
+                            className="btn ghost small"
+                            style=${{ marginTop: "8px" }}
+                            onClick=${() => handleDeleteSource(source)}
+                            disabled=${deletingSourceId === source.id}
+                          >
+                            ${deletingSourceId === source.id ? "删除中..." : "删除文档"}
+                          </button>
                         </div>
                       </div>
                     `,
@@ -381,7 +726,7 @@ export function KnowledgePage({ html, sources, tasks, refreshAll, rememberTask }
         <div className="section-title-row"><h3>\u6700\u8fd1\u7d22\u5f15\u4efb\u52a1</h3></div>
         <${ActivityList}
           html=${html}
-          items=${tasks}
+          items=${safeTasks}
           emptyText="\u6682\u65f6\u6ca1\u6709\u7d22\u5f15\u4efb\u52a1\u8bb0\u5f55\u3002"
         />
       </section>

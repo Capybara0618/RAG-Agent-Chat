@@ -22,7 +22,7 @@ export const NAV_ITEMS = {
     {
       id: "projects",
       title: "审批工作台",
-      description: "处理上级审批和最终审批。",
+      description: "处理上级审批和项目推进。",
     },
   ],
   procurement: [
@@ -105,13 +105,14 @@ export const DEMO_QUESTIONS = [
 ];
 
 export const DEMO_FILES = [
-  "procurement_cn_vendor_onboarding_policy.md",
-  "procurement_cn_contract_playbook.md",
-  "procurement_cn_standard_msa_template.md",
-  "procurement_cn_vendor_redline_msa.md",
-  "procurement_cn_security_review_sop.md",
-  "procurement_cn_approval_matrix.md",
-  "procurement_cn_faq.csv",
+  "采购核心-供应商准入办法.md",
+  "采购核心-采购审批矩阵.md",
+  "采购核心-安全评审操作流程.md",
+  "采购核心-常见问答.csv",
+  "法务核心-数据处理供应商检查清单.md",
+  "法务核心-合同审查红线指引.md",
+  "法务核心-标准主服务协议模板.md",
+  "法务核心-供应商回传红线协议.md",
 ];
 
 export const PROJECT_STAGE_ORDER = [
@@ -119,7 +120,6 @@ export const PROJECT_STAGE_ORDER = [
   "manager_review",
   "procurement_sourcing",
   "legal_review",
-  "final_approval",
   "signing",
   "completed",
 ];
@@ -158,9 +158,16 @@ const LABELS = {
   selected: "已选中",
   rejected: "已淘汰",
   legal_rejected: "法务驳回",
-  recommend_proceed: "建议推进",
-  review_with_risks: "带风险推进",
+  recommend_proceed: "材料齐备，可推进",
+  review_with_risks: "存在风险，需升级复核",
+  reject_irrelevant_materials: "材料无关，未进入审查",
+  needs_required_materials: "材料不全，待补充",
   needs_follow_up: "需补充跟进",
+  approve: "建议通过",
+  return: "建议退回采购",
+  suggest_legal_review: "建议转法务",
+  hold_for_procurement: "先由采购复核",
+  wait_for_more_materials: "先补充材料",
   pass: "通过",
   warn: "关注",
   fail: "高风险",
@@ -187,6 +194,7 @@ const LABELS = {
   manager_review: "上级审批",
   procurement_sourcing: "采购比选",
   legal_review: "法务审查",
+  legal_contract_review: "法务合同审查",
   final_approval: "最终审批",
   signing: "签署归档",
 };
@@ -209,17 +217,48 @@ export function toneOf(value) {
       "active",
       "selected",
       "recommend_proceed",
+      "approve",
       "submitted",
       "pass",
     ].includes(value)
   ) {
     return "success";
   }
-  if (["failed", "refuse", "rejected", "high", "open", "legal_rejected", "withdrawn", "cancelled", "fail"].includes(value)) {
+  if (
+    [
+      "failed",
+      "refuse",
+      "rejected",
+      "high",
+      "return",
+      "open",
+      "legal_rejected",
+      "withdrawn",
+      "cancelled",
+      "fail",
+      "reject_irrelevant_materials",
+    ].includes(value)
+  ) {
     return "danger";
   }
   if (
-    ["uploaded", "indexing", "clarify", "medium", "pending", "missing", "shortlisted", "review_with_risks", "needs_follow_up", "candidate", "warn", "info"].includes(
+    [
+      "uploaded",
+      "indexing",
+      "clarify",
+      "medium",
+      "pending",
+      "missing",
+      "shortlisted",
+      "review_with_risks",
+      "needs_required_materials",
+      "needs_follow_up",
+      "candidate",
+      "warn",
+      "info",
+      "suggest_legal_review",
+      "wait_for_more_materials",
+    ].includes(
       value,
     )
   ) {

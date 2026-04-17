@@ -5,11 +5,18 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import Settings
+from app.core.config import BASE_DIR, Settings
 from app.core.security import expand_role_scope, normalize_roles
 from app.models.entities import IndexingTaskStatus
 from app.repositories.document_repository import DocumentRepository
-from app.schemas.knowledge import IndexingTaskRead, KnowledgeSourceRead, KnowledgeUploadResponse, ReindexResponse
+from app.schemas.knowledge import (
+    DeleteKnowledgeSourcesResponse,
+    IndexingTaskRead,
+    KnowledgeSourceRead,
+    KnowledgeUploadResponse,
+    ProcurementBaselineRebuildResponse,
+    ReindexResponse,
+)
 from app.services.ingestion.chunking import semantic_chunk_sections
 from app.services.ingestion.connectors import DocumentParser
 from app.services.retrieval.embeddings import EmbeddingService
@@ -175,6 +182,56 @@ class IngestionService:
         db.flush()
         return ReindexResponse(reindexed=len(task_ids), failed=0, skipped=0, task_ids=task_ids)
 
+    def delete_sources(self, db: Session, document_ids: list[str]) -> DeleteKnowledgeSourcesResponse:
+        documents = self.repository.get_documents(db, document_ids)
+        protected: list[str] = []
+        removable_ids: list[str] = []
+
+        for document in documents:
+            tag_set = {tag.strip() for tag in (document.tags or "").split(",") if tag.strip()}
+            if "project_artifact" in tag_set:
+                protected.append(document.title)
+                continue
+            removable_ids.append(document.id)
+            self._delete_local_source_file(document.source_path)
+
+        deleted = self.repository.delete_documents(db, removable_ids)
+        db.flush()
+        return DeleteKnowledgeSourcesResponse(
+            deleted=deleted,
+            skipped=max(len(document_ids) - deleted, 0),
+            protected_titles=protected,
+        )
+
+    def rebuild_procurement_baseline(self, db: Session) -> ProcurementBaselineRebuildResponse:
+        baseline_files = sorted((BASE_DIR / "data").glob("procurement_cn_*"))
+        if not baseline_files:
+            raise ValueError("No procurement baseline files found under data directory.")
+
+        existing_documents = self.repository.list_documents(db)
+        removed_documents = self.repository.delete_documents(db, [document.id for document in existing_documents])
+
+        task_ids: list[str] = []
+        retained_titles: list[str] = []
+        for path in baseline_files:
+            response = self.submit_ingestion(
+                db,
+                name=path.name,
+                data=path.read_bytes(),
+                allowed_roles="employee",
+                tags="baseline,procurement",
+                source_path=str(path),
+            )
+            task_ids.append(response.task_id)
+            retained_titles.append(path.name)
+
+        return ProcurementBaselineRebuildResponse(
+            removed_documents=removed_documents,
+            uploaded_documents=len(retained_titles),
+            task_ids=task_ids,
+            retained_titles=retained_titles,
+        )
+
     def _to_source_read(self, document) -> KnowledgeSourceRead:
         return KnowledgeSourceRead(
             id=document.id,
@@ -188,3 +245,21 @@ class IngestionService:
             last_error=document.last_error or "",
             updated_at=document.updated_at,
         )
+
+    def _delete_local_source_file(self, source_path: str) -> None:
+        normalized = (source_path or "").strip()
+        if not normalized or normalized.startswith("http"):
+            return
+        try:
+            path = Path(normalized).resolve()
+        except OSError:
+            return
+        storage_root = self.settings.storage_dir.resolve()
+        data_root = (BASE_DIR / "data").resolve()
+        if not path.exists() or not path.is_file():
+            return
+        if storage_root in path.parents or data_root in path.parents:
+            try:
+                path.unlink()
+            except OSError:
+                return

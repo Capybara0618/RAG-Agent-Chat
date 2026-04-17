@@ -8,12 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
-    Chunk,
-    Document,
     ProcurementProject,
     ProcurementStage,
     ProjectArtifact,
@@ -27,7 +24,6 @@ from app.models.entities import (
 from app.repositories.project_repository import ProjectRepository
 from app.schemas.auth import UserProfileRead
 from app.schemas.chat import QueryRequest, QueryResponse
-from app.schemas.common import ToolCallRead
 from app.schemas.project import (
     ProcurementAgentExtractResult,
     ProcurementAgentRunResult,
@@ -37,10 +33,8 @@ from app.schemas.project import (
     ProcurementAgentReviewRequest,
     ProcurementAgentReviewResult,
     ProcurementRequirementCheckRead,
-    LegalHandoffRead,
     ProjectArchiveSnapshotRead,
     ProjectArtifactCreate,
-    ProjectArtifactPreviewRead,
     ProjectArtifactRead,
     ProjectArtifactUpdate,
     ProjectCancelRequest,
@@ -162,82 +156,77 @@ class ProjectService:
         ProcurementStage.manager_review.value,
         ProcurementStage.procurement_sourcing.value,
         ProcurementStage.legal_review.value,
+        ProcurementStage.final_approval.value,
         ProcurementStage.signing.value,
         ProcurementStage.completed.value,
     ]
-
-    LEGAL_OUR_CONTRACT_ARTIFACT_TYPES = ("our_procurement_contract", "standard_contract_dispatch")
-    LEGAL_COUNTERPARTY_CONTRACT_ARTIFACT_TYPES = ("counterparty_redline_contract", "vendor_redline_contract")
-    LEGAL_DEFAULT_REVIEW_QUERY = (
-        "请对比我方采购合同与对方修改后的采购合同，聚焦责任限制、赔偿或违约责任、解约条件、保密义务、"
-        "争议解决与适用法律等核心红线，输出结构化结论、问题条款、建议动作，并给出引用依据。"
-    )
 
     STAGE_BLUEPRINTS = {
         ProcurementStage.business_draft.value: StageBlueprint(
             stage=ProcurementStage.business_draft,
             owner_role="business",
             required_tasks=[
-                ("intake", "填写并确认采购申请表", "business"),
+                ("intake", "濉啓骞剁‘璁ら噰璐敵璇疯〃", "business"),
             ],
             required_artifacts=[
-                ("procurement_application_form", "采购申请表", "internal"),
+                ("procurement_application_form", "閲囪喘鐢宠琛?, "internal"),
             ],
         ),
         ProcurementStage.manager_review.value: StageBlueprint(
             stage=ProcurementStage.manager_review,
             owner_role="manager",
             required_tasks=[
-                ("review", "审查采购必要性与内部替代方案", "manager"),
-                ("review", "确认预算与立项是否合理", "manager"),
+                ("review", "瀹℃煡閲囪喘蹇呰鎬т笌鍐呴儴鏇夸唬鏂规", "manager"),
+                ("review", "纭棰勭畻涓庣珛椤规槸鍚﹀悎鐞?, "manager"),
             ],
             required_artifacts=[
-                ("manager_review_note", "上级审批意见", "internal"),
+                ("manager_review_note", "涓婄骇瀹℃壒鎰忚", "internal"),
             ],
         ),
         ProcurementStage.procurement_sourcing.value: StageBlueprint(
             stage=ProcurementStage.procurement_sourcing,
             owner_role="procurement",
             required_tasks=[
-                ("sourcing", "收集候选供应商资料", "procurement"),
-                ("sourcing", "完成候选供应商比选", "procurement"),
-                ("selection", "选择目标供应商", "procurement"),
+                ("sourcing", "鏀堕泦鍊欓€変緵搴斿晢璧勬枡", "procurement"),
+                ("sourcing", "瀹屾垚鍊欓€変緵搴斿晢姣旈€?, "procurement"),
+                ("selection", "閫夋嫨鐩爣渚涘簲鍟?, "procurement"),
             ],
             required_artifacts=[
-                ("vendor_comparison_sheet", "候选供应商比选表", "internal"),
-                ("procurement_recommendation", "采购建议说明", "internal"),
+                ("vendor_comparison_sheet", "鍊欓€変緵搴斿晢姣旈€夎〃", "internal"),
+                ("procurement_recommendation", "閲囪喘寤鸿璇存槑", "internal"),
             ],
         ),
         ProcurementStage.legal_review.value: StageBlueprint(
             stage=ProcurementStage.legal_review,
             owner_role="legal",
             required_tasks=[
-                ("review", "完成法务审查并给出结论", "legal"),
+                ("contract", "鍚戠洰鏍囦緵搴斿晢鍙戦€佹垜鏂归噰璐悎鍚?, "legal"),
+                ("contract", "瀹℃煡瀵规柟鍥炰紶鍚堝悓骞剁‘璁ゅ悎娉曞悎瑙?, "legal"),
             ],
             required_artifacts=[
-                ("our_procurement_contract", "我方采购合同", "internal"),
-                ("counterparty_redline_contract", "对方修改后的采购合同", "inbound"),
+                ("standard_contract_dispatch", "鎴戞柟閲囪喘鍚堝悓宸插彂閫?, "outbound"),
+                ("vendor_redline_contract", "瀵规柟鍥炰紶淇敼鍚堝悓", "inbound"),
             ],
         ),
         ProcurementStage.final_approval.value: StageBlueprint(
             stage=ProcurementStage.final_approval,
             owner_role="manager",
             required_tasks=[
-                ("approval", "完成终审审批并确认项目落地", "executive"),
+                ("approval", "瀹屾垚鏈€缁堝鎵瑰苟纭椤圭洰钀藉湴", "executive"),
             ],
             required_artifacts=[
-                ("approval_package", "终审材料包", "internal"),
+                ("approval_package", "缁堝鏉愭枡鍖?, "internal"),
             ],
         ),
         ProcurementStage.signing.value: StageBlueprint(
             stage=ProcurementStage.signing,
             owner_role="admin",
             required_tasks=[
-                ("execution", "完成签署并整理归档材料", "operations"),
+                ("execution", "瀹屾垚绛剧讲骞舵暣鐞嗗綊妗ｆ潗鏂?, "operations"),
             ],
             required_artifacts=[
-                ("signed_contract", "已签署合同", "internal"),
-                ("archive_summary", "归档摘要", "internal"),
+                ("signed_contract", "宸茬缃插悎鍚?, "internal"),
+                ("archive_summary", "褰掓。鎽樿", "internal"),
             ],
         ),
     }
@@ -296,7 +285,7 @@ class ProjectService:
                 contact_email="",
                 contact_phone="",
                 profile_summary=payload.summary,
-                procurement_notes="业务发起时录入的候选供应商。",
+                procurement_notes="涓氬姟鍙戣捣鏃跺綍鍏ョ殑鍊欓€変緵搴斿晢銆?,
             )
         self._refresh_active_stage_blocking_reason(db, project)
         db.commit()
@@ -306,15 +295,15 @@ class ProjectService:
         detail = self.create_project(
             db,
             ProjectCreate(
-                title="AlphaDesk 客服 SaaS 采购项目",
-                requester_name="王悦",
-                department="客户服务部",
+                title="AlphaDesk 瀹㈡湇 SaaS 閲囪喘椤圭洰",
+                requester_name="鐜嬫偊",
+                department="瀹㈡埛鏈嶅姟涓績",
                 vendor_name="AlphaDesk",
                 category="customer-support-saas",
                 budget_amount=1200000,
                 currency="CNY",
-                summary="客户服务部计划采购在线客服与工单协同 SaaS。供应商将处理客户聊天记录与工单附件，因此需要经过业务申请、上级审批、采购筛选、法务审查与签署归档。",
-                business_value="统一客服流程，缩短响应时长，并提升客户服务质量。",
+                summary="瀹㈡埛鏈嶅姟涓績璁″垝閲囪喘鍦ㄧ嚎瀹㈡湇涓庡伐鍗曞崗鍚?SaaS锛屼緵搴斿晢灏嗗鐞嗗鎴疯亰澶╄褰曚笌宸ュ崟闄勪欢锛岄渶瑕佺粡杩囦笟鍔＄敵璇枫€佷笂绾у鎵广€侀噰璐瘮閫夈€佹硶鍔″鏌ャ€佹渶缁堝鎵瑰拰绛剧讲褰掓。銆?,
+                business_value="缁熶竴瀹㈡湇娴佺▼锛岀缉鐭搷搴旀椂闀匡紝骞舵彁鍗囧鎴锋湇鍔¤川閲忋€?,
                 target_go_live_date="2026-06-30",
                 data_scope="customer_data",
             ),
@@ -332,8 +321,8 @@ class ProjectService:
                 contact_name="",
                 contact_email="servicenova@example.com",
                 contact_phone="400-800-9000",
-                profile_summary="备选 SaaS 供应商，价格更低但合同条款较弱。",
-                procurement_notes="演示项目中附带的备选供应商。",
+                profile_summary="澶囬€夊鏈?SaaS 渚涘簲鍟嗭紝浠锋牸鏇翠綆浣嗗悎鍚屾潯娆捐緝寮便€?,
+                procurement_notes="婕旂ず椤圭洰鑷姩闄勫甫鐨勫閫変緵搴斿晢銆?,
             )
         db.commit()
         return self.get_project_detail(db, detail.id)
@@ -354,21 +343,7 @@ class ProjectService:
     def get_project_detail(self, db: Session, project_id: str) -> ProjectDetailRead:
         project = self._require_project(db, project_id)
         self._normalize_optional_approval_stage_requirements(db, project, project.current_stage)
-        self._ensure_stage_defaults(db, project, project.current_stage)
-        if project.current_stage == ProcurementStage.final_approval.value:
-            # Legacy projects may still be parked in final_approval. Pre-create signing tasks/artifacts
-            # so admins can finish them from the streamlined signing workspace.
-            self._ensure_stage_defaults(db, project, ProcurementStage.signing.value)
         self._sync_business_draft_form_state(db, project)
-        if project.current_stage == ProcurementStage.legal_review.value and project.selected_vendor_id:
-            try:
-                selected_vendor = self._require_selected_vendor(db, project)
-            except ValueError:
-                selected_vendor = None
-            if selected_vendor is not None:
-                self._sync_legal_review_handoff_state(db, project, selected_vendor)
-        db.commit()
-        db.refresh(project)
         tasks = self.repository.list_tasks(db, project.id)
         vendors = self.repository.list_vendor_candidates(db, project.id)
         artifacts = self.repository.list_artifacts(db, project.id)
@@ -417,7 +392,7 @@ class ProjectService:
             decision_type="draft_update",
             decision_by="business",
             manual_decision="updated",
-            summary="业务申请草稿已更新。",
+            summary="涓氬姟鐢宠鑽夌宸叉洿鏂般€?,
             reason="",
         )
         self._refresh_active_stage_blocking_reason(db, project)
@@ -436,7 +411,7 @@ class ProjectService:
             decision_type="submit",
             decision_by=payload.actor_role,
             manual_decision="submitted",
-            summary="业务申请已提交，进入上级审批。",
+            summary="涓氬姟鐢宠宸叉彁浜わ紝杩涘叆涓婄骇瀹℃壒銆?,
             reason=payload.reason,
         )
         self._move_project_to_stage(
@@ -462,7 +437,7 @@ class ProjectService:
             decision_type="withdraw",
             decision_by=payload.actor_role,
             manual_decision="withdrawn",
-            summary="业务申请已撤回到草稿。",
+            summary="涓氬姟鐢宠宸叉挙鍥炲埌鑽夌銆?,
             reason=payload.reason,
         )
         if project.current_stage != ProcurementStage.business_draft.value:
@@ -493,7 +468,7 @@ class ProjectService:
                 decision_type="manager_review",
                 decision_by=payload.actor_role,
                 manual_decision="approved",
-                summary="上级审批通过，进入采购筛选。",
+                summary="涓婄骇瀹℃壒閫氳繃锛岃繘鍏ラ噰璐瘮閫夈€?,
                 reason=payload.reason,
             )
             self._move_project_to_stage(
@@ -515,7 +490,7 @@ class ProjectService:
                 decision_type="manager_review",
                 decision_by=payload.actor_role,
                 manual_decision="returned",
-                summary="上级审批退回草稿。",
+                summary="涓婄骇瀹℃壒閫€鍥炶崏绋裤€?,
                 reason=payload.reason,
             )
             self._move_project_to_stage(
@@ -596,7 +571,6 @@ class ProjectService:
                 status="active",
             ),
         )
-        self._ensure_review_trace_id(review)
         project.chat_session_id = review.session_id
         vendor.ai_review_summary = review.answer
         vendor.ai_recommendation = self._derive_ai_recommendation(review.next_action, review.debug_summary)
@@ -1011,14 +985,6 @@ class ProjectService:
         self._validate_procurement_agent_draft(draft)
         recommended_action = self._derive_procurement_precheck_recommendation(material_gate, requirement_checks)
         if recommended_action == "reject_irrelevant_materials":
-            generated_query = self._build_procurement_agent_query(
-                project,
-                draft,
-                focus_points,
-                supplier_profile=supplier_profile,
-                supplier_dossier=supplier_dossier,
-                requirement_checks=requirement_checks,
-            )
             review = self._build_procurement_precheck_review(
                 project=project,
                 draft=draft,
@@ -1055,7 +1021,7 @@ class ProjectService:
                 review=review,
                 assessment=assessment,
             )
-            return review, assessment, generated_query
+            return review, assessment, ""
 
         generated_query = self._build_procurement_agent_query(
             project,
@@ -1072,20 +1038,9 @@ class ProjectService:
                 session_id=None,
                 user_role=current_user.role,
                 top_k=max(1, min(int(top_k), 10)),
-                tool_sequence=[
-                    "retrieve_procurement_knowledge",
-                    "compare_procurement_evidence",
-                ],
             ),
             current_user=current_user,
         )
-        review = self._merge_procurement_tool_trace(
-            review,
-            material_gate=material_gate,
-            requirement_checks=requirement_checks,
-            supplier_dossier=supplier_dossier,
-        )
-        self._ensure_review_trace_id(review)
         reviewed_draft = ProcurementAgentVendorDraft(
             vendor_name=draft.vendor_name,
             source_platform=draft.source_platform,
@@ -1111,10 +1066,6 @@ class ProjectService:
             material_gate=material_gate,
             requirement_checks=requirement_checks,
             supplier_dossier=supplier_dossier,
-        )
-        review = self._finalize_procurement_tool_trace(
-            review,
-            assessment=assessment,
         )
         self._upsert_procurement_reviewed_vendor(
             db,
@@ -1216,7 +1167,7 @@ class ProjectService:
             decision_type="vendor_selection",
             decision_by=payload.actor_role,
             manual_decision="selected",
-            summary=f"已选择目标供应商：{vendor.vendor_name}。",
+            summary=f"宸查€夋嫨鐩爣渚涘簲鍟嗭細{vendor.vendor_name}銆?,
             reason=payload.reason,
         )
         self._sync_procurement_selection_state(db, project, vendor)
@@ -1229,6 +1180,7 @@ class ProjectService:
             actor_role=payload.actor_role,
             reason=payload.reason,
         )
+        self._sync_legal_review_handoff_state(db, project, vendor)
         db.commit()
         return self.get_project_detail(db, project.id)
 
@@ -1273,45 +1225,18 @@ class ProjectService:
         db.refresh(artifact)
         return ProjectArtifactRead.model_validate(artifact)
 
-    def get_artifact_preview(self, db: Session, project_id: str, artifact_id: str) -> ProjectArtifactPreviewRead:
-        project = self._require_project(db, project_id)
-        artifact = self.repository.get_artifact(db, artifact_id)
-        if artifact is None or artifact.project_id != project.id:
-            raise ValueError("Project artifact not found.")
-        if not artifact.document_id:
-            raise ValueError("This artifact has not uploaded a contract file yet.")
-
-        document = db.get(Document, artifact.document_id)
-        if document is None:
-            raise ValueError("Artifact document not found.")
-
-        text_content = self._build_artifact_preview_text(db, document)
-        return ProjectArtifactPreviewRead(
-            artifact_id=artifact.id,
-            document_id=artifact.document_id,
-            title=artifact.title,
-            source_title=document.title,
-            text_content=text_content,
-            content_excerpt=text_content[:400],
-        )
-
     def legal_review(self, db: Session, project_id: str, payload: ProjectLegalReviewRequest) -> ProjectLegalReviewResult:
         project = self._require_project(db, project_id)
         self._require_stage(project, ProcurementStage.legal_review.value)
         selected_vendor = self._require_selected_vendor(db, project)
-        self._ensure_legal_review_materials_ready(db, project, selected_vendor)
-        query = payload.query.strip() or self._build_default_legal_review_query(project, selected_vendor)
+        self._ensure_legal_review_artifacts_ready(db, project)
         review = self.agent_service.query(
             db,
             QueryRequest(
-                query=query,
+                query=payload.query,
                 session_id=project.chat_session_id or None,
                 user_role=payload.user_role,
                 top_k=payload.top_k,
-                tool_sequence=[
-                    "retrieve_legal_redlines",
-                    "compare_legal_clauses",
-                ],
             ),
             current_user=UserProfileRead(
                 id=f"project-{payload.user_role}",
@@ -1322,17 +1247,8 @@ class ProjectService:
                 status="active",
             ),
         )
-        self._ensure_review_trace_id(review)
         project.chat_session_id = review.session_id
         structured_review = self._build_legal_structured_review(project, selected_vendor, review)
-        review = self._merge_legal_tool_trace(
-            db,
-            review=review,
-            project=project,
-            vendor=selected_vendor,
-            structured_review=structured_review,
-        )
-        self._mark_legal_review_completed(db, project, structured_review)
         self.repository.create_decision(
             db,
             project_id=project.id,
@@ -1350,7 +1266,7 @@ class ProjectService:
         )
         self.repository.clear_stage_risks(db, project.id, project.current_stage, linked_vendor_id=selected_vendor.id)
         risks = self._materialize_risks(db, project, review, linked_vendor_id=selected_vendor.id)
-        project.risk_level = structured_review.risk_level or self._derive_risk_level(risks, review.next_action)
+        project.risk_level = self._derive_risk_level(risks, review.next_action)
         self._refresh_active_stage_blocking_reason(db, project)
         db.commit()
         return ProjectLegalReviewResult(
@@ -1359,30 +1275,6 @@ class ProjectService:
             assessment=structured_review,
             risks=[ProjectRiskRead.model_validate(risk) for risk in risks],
         )
-
-    def _build_artifact_preview_text(self, db: Session, document: Document) -> str:
-        source_path = (document.source_path or "").strip()
-        if source_path:
-            path = Path(source_path)
-            if path.exists() and path.is_file():
-                try:
-                    source_name = path.name or document.title or "artifact.txt"
-                    _, sections = self.document_parser.parse_bytes(name=source_name, data=path.read_bytes())
-                    text = "\n\n".join(section.content.strip() for section in sections if section.content.strip())
-                    if text:
-                        return text[:12000]
-                except Exception:
-                    pass
-
-        chunks = list(
-            db.scalars(
-                select(Chunk)
-                .where(Chunk.document_id == document.id)
-                .order_by(Chunk.order_index.asc())
-                .limit(30)
-            )
-        )
-        return "\n\n".join(chunk.content.strip() for chunk in chunks if chunk.content.strip())[:12000]
 
     def legal_decision(self, db: Session, project_id: str, payload: ProjectLegalDecisionRequest) -> ProjectDetailRead:
         project = self._require_project(db, project_id)
@@ -1400,13 +1292,13 @@ class ProjectService:
                 decision_type="legal_review",
                 decision_by=payload.actor_role,
                 manual_decision="approved",
-                summary="法务审查通过，提交签署。",
+                summary="娉曞姟瀹℃煡閫氳繃锛屾彁浜ゆ渶缁堝鎵广€?,
                 reason=payload.reason,
             )
             self._move_project_to_stage(
                 db,
                 project=project,
-                target_stage=ProcurementStage.signing.value,
+                target_stage=ProcurementStage.final_approval.value,
                 action="legal_approve",
                 actor_role=payload.actor_role,
                 reason=payload.reason,
@@ -1427,7 +1319,7 @@ class ProjectService:
                 decision_type="legal_review",
                 decision_by=payload.actor_role,
                 manual_decision="returned_to_procurement",
-                summary="法务审查未通过，退回采购重新筛选供应商。",
+                summary="娉曞姟瀹℃煡涓嶉€氳繃锛岄€€鍥為噰璐噸鏂扮瓫閫変緵搴斿晢銆?,
                 reason=payload.reason,
             )
             self._move_project_to_stage(
@@ -1454,7 +1346,7 @@ class ProjectService:
             decision_type="final_approval",
             decision_by=payload.actor_role,
             manual_decision="approved",
-            summary="终审已通过，进入签署归档。",
+            summary="鏈€缁堝鎵瑰凡閫氳繃锛岃繘鍏ョ缃插綊妗ｃ€?,
             reason=payload.reason,
         )
         self._move_project_to_stage(
@@ -1480,7 +1372,7 @@ class ProjectService:
             decision_type="final_return",
             decision_by=payload.actor_role,
             manual_decision=f"returned_to_{payload.target_stage}",
-            summary=f"终审退回到 {payload.target_stage}。",
+            summary=f"鏈€缁堝鎵归€€鍥炲埌 {payload.target_stage}銆?,
             reason=payload.reason,
         )
         if payload.target_stage == ProcurementStage.procurement_sourcing.value:
@@ -1530,7 +1422,7 @@ class ProjectService:
             decision_type="cancel",
             decision_by=payload.actor_role,
             manual_decision="cancelled",
-            summary="项目已取消。",
+            summary="椤圭洰宸插彇娑堛€?,
             reason=payload.reason,
         )
         db.commit()
@@ -1538,16 +1430,6 @@ class ProjectService:
 
     def sign_project(self, db: Session, project_id: str, payload: ProjectSignRequest) -> ProjectDetailRead:
         project = self._require_project(db, project_id)
-        if project.current_stage == ProcurementStage.final_approval.value:
-            self._ensure_stage_defaults(db, project, ProcurementStage.signing.value)
-            self._move_project_to_stage(
-                db,
-                project=project,
-                target_stage=ProcurementStage.signing.value,
-                action="legacy_final_approval_to_signing",
-                actor_role=payload.actor_role,
-                reason=payload.reason or "历史最终审批项目转入签署阶段。",
-            )
         self._require_stage(project, ProcurementStage.signing.value)
         self._ensure_stage_ready_to_leave(db, project, ProcurementStage.signing.value)
         self._record_manual_decision(
@@ -1558,7 +1440,7 @@ class ProjectService:
             decision_type="signing",
             decision_by=payload.actor_role,
             manual_decision="signed",
-            summary="项目已完成签署并归档。",
+            summary="椤圭洰宸插畬鎴愮缃插苟褰掓。銆?,
             reason=payload.reason,
         )
         self._move_project_to_stage(
@@ -1620,7 +1502,7 @@ class ProjectService:
                     kind="archive",
                     stage=archive.stage,
                     title="archive_snapshot",
-                    summary="项目已生成归档快照。",
+                    summary="椤圭洰宸茬敓鎴愬綊妗ｅ揩鐓с€?,
                     created_at=archive.created_at,
                 )
             )
@@ -1673,16 +1555,12 @@ class ProjectService:
         if not self._can_view_project(db, current_user, project):
             raise PermissionError("Project is not visible to the current account.")
         allowed_roles = {project.current_owner_role}
-        if project.current_stage == ProcurementStage.final_approval.value:
-            allowed_roles.add("admin")
         if project.current_stage == ProcurementStage.manager_review.value and current_user.role == "business":
             allowed_roles.add("business")
         if current_user.role not in allowed_roles:
             raise PermissionError("Current account cannot edit tasks or materials in this stage.")
 
     def _stage_index(self, stage: str) -> int:
-        if stage == ProcurementStage.final_approval.value:
-            stage = ProcurementStage.signing.value
         try:
             return self.STAGE_ORDER.index(stage)
         except ValueError:
@@ -1722,7 +1600,7 @@ class ProjectService:
                     contact_email="",
                     contact_phone="",
                     profile_summary=project.summary,
-                    procurement_notes="业务草稿更新时同步的初始候选供应商。",
+                    procurement_notes="涓氬姟鑽夌鏇存柊鏃跺悓姝ョ殑鍒濆鍊欓€変緵搴斿晢銆?,
                 )
             elif business_input_vendor.status in {
                 VendorCandidateStatus.candidate.value,
@@ -1733,7 +1611,7 @@ class ProjectService:
         elif business_input_vendor is not None and business_input_vendor.status == VendorCandidateStatus.candidate.value:
             business_input_vendor.status = VendorCandidateStatus.rejected.value
             business_input_vendor.manual_decision = "removed_from_draft"
-            business_input_vendor.manual_reason = "业务草稿中移除了初始候选供应商。"
+            business_input_vendor.manual_reason = "涓氬姟鑽夌涓凡绉婚櫎鍒濆鍊欓€変緵搴斿晢銆?
 
     def _require_stage(self, project: ProcurementProject, stage: str) -> None:
         if project.current_stage != stage:
@@ -1774,13 +1652,6 @@ class ProjectService:
         if target_stage == ProcurementStage.completed.value:
             record.ended_at = datetime.utcnow()
         self._ensure_stage_defaults(db, project, target_stage)
-        if target_stage == ProcurementStage.legal_review.value and project.selected_vendor_id:
-            try:
-                selected_vendor = self._require_selected_vendor(db, project)
-            except ValueError:
-                selected_vendor = None
-            if selected_vendor is not None:
-                self._sync_legal_review_handoff_state(db, project, selected_vendor)
         self._refresh_active_stage_blocking_reason(db, project)
 
     def _ensure_stage_defaults(self, db: Session, project: ProcurementProject, stage: str) -> None:
@@ -1822,7 +1693,7 @@ class ProjectService:
                     direction=direction,
                     version_no=1,
                     status="missing",
-                    notes="系统内置流转材料。",
+                    notes="绯荤粺鍐呯疆娴佽浆鏉愭枡銆?,
                 )
 
     def _normalize_optional_approval_stage_requirements(self, db: Session, project: ProcurementProject, stage: str) -> None:
@@ -1839,45 +1710,47 @@ class ProjectService:
         return [
             RequirementCheckRead(
                 key="title",
-                label="Project title captured",
+                label="宸插～鍐欓」鐩悕绉?,
                 checked=bool(project.title.strip()),
-                detail="Project title is filled in." if project.title.strip() else "Please fill in the procurement project title.",
+                detail="椤圭洰鍚嶇О宸插～鍐欍€? if project.title.strip() else "璇峰～鍐欓噰璐」鐩悕绉般€?,
             ),
             RequirementCheckRead(
                 key="requester",
-                label="Requester and department captured",
+                label="宸插～鍐欑敵璇烽儴闂ㄤ笌鐢宠浜?,
                 checked=bool(project.requester_name.strip()) and bool(project.department.strip()),
-                detail="Requester and department are filled in." if project.requester_name.strip() and project.department.strip() else "Please fill in requester and department.",
+                detail="鐢宠閮ㄩ棬涓庣敵璇蜂汉宸插～鍐欍€?
+                if project.requester_name.strip() and project.department.strip()
+                else "璇疯ˉ鍏呯敵璇蜂汉鍜屾墍灞為儴闂ㄣ€?,
             ),
             RequirementCheckRead(
                 key="purpose",
-                label="Procurement purpose described",
+                label="宸茶鏄庨噰璐洰鐨勪笌闇€姹傝鐐?,
                 checked=bool(project.summary.strip()),
-                detail="Procurement purpose and scenario are filled in." if project.summary.strip() else "Please describe the procurement purpose, scope, and business scenario.",
+                detail="閲囪喘鐩殑涓庨渶姹傝鐐瑰凡濉啓銆? if project.summary.strip() else "璇疯鏄庨噰璐洰鐨勩€侀噰璐唴瀹瑰拰涓氬姟鍦烘櫙銆?,
             ),
             RequirementCheckRead(
                 key="budget",
-                label="Budget captured",
+                label="宸插～鍐欓绠楅噾棰?,
                 checked=project.budget_amount > 0,
-                detail="Budget amount is filled in." if project.budget_amount > 0 else "Please provide a budget amount greater than 0.",
+                detail="棰勭畻閲戦宸插～鍐欍€? if project.budget_amount > 0 else "璇峰～鍐欏ぇ浜?0 鐨勯绠楅噾棰濄€?,
             ),
             RequirementCheckRead(
                 key="business_value",
-                label="Business value described",
+                label="宸茶鏄庝笟鍔′环鍊?,
                 checked=bool(project.business_value.strip()),
-                detail="Business value is filled in." if project.business_value.strip() else "Please describe the expected business value or benefit.",
+                detail="涓氬姟浠峰€煎凡濉啓銆? if project.business_value.strip() else "璇疯ˉ鍏呴鏈熸敹鐩婃垨涓氬姟浠峰€笺€?,
             ),
             RequirementCheckRead(
                 key="target_go_live_date",
-                label="Go-live target captured",
+                label="宸插～鍐欐湡鏈涗笂绾挎椂闂?,
                 checked=bool(project.target_go_live_date.strip()),
-                detail="Target go-live date is filled in." if project.target_go_live_date.strip() else "Please provide the expected go-live date.",
+                detail="鏈熸湜涓婄嚎鏃堕棿宸插～鍐欍€? if project.target_go_live_date.strip() else "璇峰～鍐欐湡鏈涗笂绾挎椂闂淬€?,
             ),
             RequirementCheckRead(
                 key="data_scope",
-                label="Data scope identified",
+                label="宸茶瘑鍒暟鎹寖鍥?,
                 checked=bool(project.data_scope.strip()),
-                detail="Data scope is identified." if project.data_scope.strip() else "Please clarify whether the project involves customer or sensitive data.",
+                detail="鏁版嵁鑼冨洿宸叉爣璁般€? if project.data_scope.strip() else "璇锋槑纭槸鍚︽秹鍙婃晱鎰熸暟鎹垨瀹㈡埛鏁版嵁銆?,
             ),
         ]
 
@@ -1889,8 +1762,8 @@ class ProjectService:
         passed_count = sum(1 for item in checks if item.checked)
         total_count = len(checks)
         if passed_count == total_count:
-            return f"The procurement application form passed all checks ({passed_count}/{total_count}) and can move to manager review."
-        return f"The procurement application form currently satisfies {passed_count}/{total_count} checks. Complete the missing items before submission."
+            return f"閲囪喘鐢宠琛ㄥ凡瀹屾垚绯荤粺鏍￠獙锛寋passed_count}/{total_count} 椤硅鐐瑰凡婊¤冻锛屽彲鐢变笟鍔￠儴闂ㄨ嚜涓绘彁浜ゅ埌涓婄骇瀹℃壒銆?
+        return f"閲囪喘鐢宠琛ㄥ綋鍓嶅凡婊¤冻 {passed_count}/{total_count} 椤硅鐐癸紝琛ラ綈鏈畬鎴愰」鍚庡嵆鍙彁浜ゅ埌涓婄骇瀹℃壒銆?
 
     def _sync_business_draft_form_state(self, db: Session, project: ProcurementProject) -> None:
         if project.current_stage != ProcurementStage.business_draft.value:
@@ -1899,9 +1772,9 @@ class ProjectService:
         form_ready = self._application_form_ready(project)
         summary = self._application_form_summary(project)
         for task in self.repository.list_tasks(db, project.id):
-            if task.stage != ProcurementStage.business_draft.value or not task.required:
+            if task.stage != ProcurementStage.business_draft.value or task.title != "濉啓骞剁‘璁ら噰璐敵璇疯〃":
                 continue
-            task.details = "The system-maintained procurement application form is updated automatically as business fields change."
+            task.details = "绯荤粺鍐呯疆閲囪喘鐢宠琛紝鐘舵€侀殢涓氬姟瀛楁瀹屾暣搴﹁嚜鍔ㄦ洿鏂般€?
             task.status = "done" if form_ready else "pending"
         for artifact in self.repository.list_artifacts(db, project.id):
             if artifact.stage != ProcurementStage.business_draft.value or artifact.artifact_type != "procurement_application_form":
@@ -1922,19 +1795,19 @@ class ProjectService:
         self._ensure_stage_defaults(db, project, ProcurementStage.procurement_sourcing.value)
         review = self._structured_review_from_json(vendor.ai_review_json)
         recommendation = review.recommendation if review is not None else vendor.ai_recommendation or "review_with_risks"
-        conclusion = review.conclusion if review is not None else vendor.ai_review_summary or "Procurement selected the supplier after the sourcing review."
+        conclusion = review.conclusion if review is not None else vendor.ai_review_summary or "閲囪喘宸插畬鎴愪緵搴斿晢鍒濆骞剁‘瀹氱洰鏍囦緵搴斿晢銆?
         for task in self.repository.list_tasks(db, project.id):
             if task.stage != ProcurementStage.procurement_sourcing.value or not task.required:
                 continue
-            if task.task_type == "sourcing" and "比选" not in task.title:
+            if task.title == "鏀堕泦鍊欓€変緵搴斿晢璧勬枡":
                 task.status = "done"
-                task.details = f"Supplier materials were collected and parsed for {vendor.vendor_name}."
-            elif task.task_type == "sourcing":
+                task.details = f"宸叉敹闆嗗苟瑙ｆ瀽渚涘簲鍟嗘潗鏂欙細{vendor.vendor_name}銆?
+            elif task.title == "瀹屾垚鍊欓€変緵搴斿晢姣旈€?:
                 task.status = "done"
-                task.details = f"System review finished. Current recommendation: {recommendation}."
-            elif task.task_type == "selection":
+                task.details = f"绯荤粺宸茬敓鎴愬€欓€夌粨璁猴紝褰撳墠寤鸿锛歿recommendation}銆?
+            elif task.title == "閫夋嫨鐩爣渚涘簲鍟?:
                 task.status = "done"
-                task.details = f"Procurement selected {vendor.vendor_name} as the target supplier."
+                task.details = f"閲囪喘宸茬‘璁ょ洰鏍囦緵搴斿晢锛歿vendor.vendor_name}銆?
         for artifact in self.repository.list_artifacts(db, project.id):
             if artifact.stage != ProcurementStage.procurement_sourcing.value or not artifact.required:
                 continue
@@ -1942,7 +1815,7 @@ class ProjectService:
             artifact.version_no = max(int(artifact.version_no or 1), 1)
             if artifact.artifact_type == "vendor_comparison_sheet":
                 artifact.status = "provided"
-                artifact.notes = f"System comparison completed. Current target supplier: {vendor.vendor_name}."
+                artifact.notes = f"绯荤粺宸插畬鎴愬€欓€変緵搴斿晢姣旈€夛紝褰撳墠閫夊畾锛歿vendor.vendor_name}銆?
             elif artifact.artifact_type == "procurement_recommendation":
                 artifact.status = "provided"
                 artifact.linked_vendor_id = vendor.id
@@ -1950,13 +1823,13 @@ class ProjectService:
 
     def _vendor_contact_summary(self, vendor: VendorCandidate) -> str:
         contact_bits = [
-            f"Contact: {vendor.contact_name}" if (vendor.contact_name or "").strip() else "",
-            f"Email: {vendor.contact_email}" if (vendor.contact_email or "").strip() else "",
-            f"Phone: {vendor.contact_phone}" if (vendor.contact_phone or "").strip() else "",
-            f"Public source: {vendor.source_url}" if (vendor.source_url or "").strip() else "",
+            f"鑱旂郴浜猴細{vendor.contact_name}" if (vendor.contact_name or "").strip() else "",
+            f"閭锛歿vendor.contact_email}" if (vendor.contact_email or "").strip() else "",
+            f"鐢佃瘽锛歿vendor.contact_phone}" if (vendor.contact_phone or "").strip() else "",
+            f"鍏紑鏉ユ簮锛歿vendor.source_url}" if (vendor.source_url or "").strip() else "",
         ]
-        summary = "; ".join(item for item in contact_bits if item)
-        return summary or "No direct contact details were captured yet. Legal can use the public source as the initial contact path."
+        summary = "锛?.join(item for item in contact_bits if item)
+        return summary or "鏆傛湭琛ュ厖鐩存帴鑱旂郴鏂瑰紡锛屽彲鍏堜緷鎹叕寮€鏉ユ簮鑱旂郴渚涘簲鍟嗐€?
 
     def _sync_legal_review_handoff_state(
         self,
@@ -1966,89 +1839,23 @@ class ProjectService:
     ) -> None:
         if project.current_stage != ProcurementStage.legal_review.value:
             return
-        contract_summary = self._vendor_contact_summary(vendor)
+        contact_summary = self._vendor_contact_summary(vendor)
         for task in self.repository.list_tasks(db, project.id):
             if task.stage != ProcurementStage.legal_review.value or not task.required:
                 continue
-            task.details = (
-                "请先确认已上传我方采购合同与对方修改后的采购合同，再运行法务红线审查。"
-                f" 当前供应商信息：{contract_summary}"
-            )
+            if task.title == "鍚戠洰鏍囦緵搴斿晢鍙戦€佹垜鏂归噰璐悎鍚?:
+                task.details = f"娉曞姟鏍规嵁閲囪喘浜ゆ帴淇℃伅鍚戜緵搴斿晢鍙戦€佹垜鏂归噰璐悎鍚屻€倇contact_summary}"
+            elif task.title == "瀹℃煡瀵规柟鍥炰紶鍚堝悓骞剁‘璁ゅ悎娉曞悎瑙?:
+                task.details = "寰呬緵搴斿晢鍥炰紶绾㈢嚎鐗堝悎鍚屽悗锛屽姣旀垜鏂瑰悎鍚屼笌瀵规柟淇敼鍐呭锛屽垽鏂槸鍚﹀悎娉曞悎瑙勩€侀」鐩兘鍚︾户缁墽琛屻€?
         for artifact in self.repository.list_artifacts(db, project.id):
             if artifact.stage != ProcurementStage.legal_review.value:
                 continue
-            if artifact.artifact_type in self.LEGAL_OUR_CONTRACT_ARTIFACT_TYPES:
+            if artifact.artifact_type == "standard_contract_dispatch":
                 artifact.linked_vendor_id = vendor.id
-                artifact.direction = "internal"
-                artifact.notes = "请上传本公司采购合同版本，作为法务红线对比的基准文本。"
-            elif artifact.artifact_type in self.LEGAL_COUNTERPARTY_CONTRACT_ARTIFACT_TYPES:
+                artifact.notes = f"娉曞姟鍚戜緵搴斿晢鍙戦€佹垜鏂归噰璐悎鍚屻€倇contact_summary}"
+            elif artifact.artifact_type == "vendor_redline_contract":
                 artifact.linked_vendor_id = vendor.id
-                artifact.direction = "inbound"
-                artifact.notes = "请上传对方修改后的采购合同版本，系统将与我方合同做逐条对比。"
-
-    def _build_default_legal_review_query(
-        self,
-        project: ProcurementProject,
-        vendor: VendorCandidate,
-    ) -> str:
-        vendor_name = vendor.vendor_name.strip() or "当前供应商"
-        return (
-            f"{self.LEGAL_DEFAULT_REVIEW_QUERY} 当前项目：{project.title}。"
-            f" 供应商：{vendor_name}。请优先判断是否建议通过或退回采购。"
-        )
-
-    def _collect_legal_material_blockers(
-        self,
-        artifacts: list[ProjectArtifact],
-        linked_vendor_id: str,
-    ) -> list[str]:
-        blockers: list[str] = []
-        if not self._has_stage_artifact(
-            artifacts,
-            ProcurementStage.legal_review.value,
-            self.LEGAL_OUR_CONTRACT_ARTIFACT_TYPES,
-            linked_vendor_id,
-        ):
-            blockers.append("法务审查缺少我方采购合同。")
-        if not self._has_stage_artifact(
-            artifacts,
-            ProcurementStage.legal_review.value,
-            self.LEGAL_COUNTERPARTY_CONTRACT_ARTIFACT_TYPES,
-            linked_vendor_id,
-        ):
-            blockers.append("法务审查缺少对方修改后的采购合同。")
-        return blockers
-
-    def _ensure_legal_review_materials_ready(
-        self,
-        db: Session,
-        project: ProcurementProject,
-        vendor: VendorCandidate,
-    ) -> None:
-        artifacts = self.repository.list_artifacts(db, project.id)
-        blockers = self._collect_legal_material_blockers(artifacts, vendor.id)
-        if blockers:
-            raise ValueError("；".join(blockers))
-
-    def _mark_legal_review_completed(
-        self,
-        db: Session,
-        project: ProcurementProject,
-        structured_review: StructuredReviewRead,
-    ) -> None:
-        for task in self.repository.list_tasks(db, project.id):
-            if task.stage != ProcurementStage.legal_review.value or not task.required:
-                continue
-            task.status = "done"
-            task.details = (
-                f"法务红线审查已完成。建议动作：{structured_review.decision_suggestion or 'manual_review'}；"
-                f"风险等级：{structured_review.risk_level}。"
-            )
-
-    def _ensure_review_trace_id(self, review) -> None:
-        if getattr(review, "trace_id", ""):
-            return
-        review.trace_id = str(uuid.uuid4())
+                artifact.notes = "绛夊緟渚涘簲鍟嗗洖浼犱慨鏀瑰悗鐨勫悎鍚岀増鏈紝渚涙硶鍔¤繘琛屾潯娆惧姣斾笌鍚堣瀹℃煡銆?
 
     def _ensure_stage_ready_to_leave(self, db: Session, project: ProcurementProject, stage: str) -> None:
         blockers = self._collect_blockers(
@@ -2075,43 +1882,55 @@ class ProjectService:
         if current_stage == ProcurementStage.business_draft.value:
             for item in self._build_application_checks(project):
                 if not item.checked:
-                    blockers.append(f"采购申表未完成: {item.label}")
+                    blockers.append(f"閲囪喘鐢宠琛ㄦ湭瀹屾垚锛歿item.label}")
             return blockers
         for task in tasks:
             if task.stage == current_stage and task.required and task.status != "done":
                 blockers.append(f"Task pending: {task.title}")
-        if current_stage != ProcurementStage.legal_review.value:
-            for artifact in artifacts:
-                if artifact.stage != current_stage or not artifact.required:
-                    continue
-                if artifact.status not in {"provided", "approved"}:
-                    blockers.append(f"Artifact missing: {artifact.title}")
+        for artifact in artifacts:
+            if artifact.stage != current_stage or not artifact.required:
+                continue
+            if artifact.status not in {"provided", "approved"}:
+                blockers.append(f"Artifact missing: {artifact.title}")
         if current_stage == ProcurementStage.procurement_sourcing.value and not project.selected_vendor_id:
             blockers.append("Target vendor has not been selected.")
         if current_stage == ProcurementStage.legal_review.value:
             if not project.selected_vendor_id:
                 blockers.append("No selected vendor is attached to legal review.")
-            blockers.extend(self._collect_legal_material_blockers(artifacts, project.selected_vendor_id))
+            if not self._has_stage_artifact(artifacts, current_stage, "standard_contract_dispatch", project.selected_vendor_id):
+                blockers.append("Legal stage requires the outbound company contract.")
+            if not self._has_stage_artifact(artifacts, current_stage, "vendor_redline_contract", project.selected_vendor_id):
+                blockers.append("Legal stage requires the vendor redline contract.")
         if current_stage == ProcurementStage.final_approval.value and not project.selected_vendor_id:
             blockers.append("Final approval requires a selected vendor.")
         return blockers
 
-    def _has_stage_artifact(
-        self,
-        artifacts: list[ProjectArtifact],
-        stage: str,
-        artifact_type: str | tuple[str, ...],
-        linked_vendor_id: str,
-    ) -> bool:
-        artifact_types = {artifact_type} if isinstance(artifact_type, str) else set(artifact_type)
+    def _has_stage_artifact(self, artifacts: list[ProjectArtifact], stage: str, artifact_type: str, linked_vendor_id: str) -> bool:
         for artifact in artifacts:
-            if artifact.stage != stage or artifact.artifact_type not in artifact_types:
+            if artifact.stage != stage or artifact.artifact_type != artifact_type:
                 continue
             if linked_vendor_id and artifact.linked_vendor_id not in {"", linked_vendor_id}:
                 continue
             if artifact.status in {"provided", "approved"}:
                 return True
         return False
+
+    def _ensure_legal_review_artifacts_ready(self, db: Session, project: ProcurementProject) -> None:
+        artifacts = self.repository.list_artifacts(db, project.id)
+        if not self._has_stage_artifact(
+            artifacts,
+            ProcurementStage.legal_review.value,
+            "standard_contract_dispatch",
+            project.selected_vendor_id,
+        ):
+            raise ValueError("Legal review requires the outbound company contract artifact.")
+        if not self._has_stage_artifact(
+            artifacts,
+            ProcurementStage.legal_review.value,
+            "vendor_redline_contract",
+            project.selected_vendor_id,
+        ):
+            raise ValueError("Legal review requires the vendor redline contract artifact.")
 
     def _refresh_active_stage_blocking_reason(self, db: Session, project: ProcurementProject) -> None:
         active_record = self.repository.get_active_stage_record(db, project.id)
@@ -2227,7 +2046,7 @@ class ProjectService:
         current_user: UserProfileRead,
     ) -> tuple[ProcurementAgentVendorDraft, str, list[str], SupplierProfileInsights]:
         combined_text = "\n\n".join(item.text for item in materials)
-        urls = list(self._find_valid_source_urls(combined_text))
+        urls = re.findall(r"https?://[^\s)>\"]+", combined_text)
         supplier_profile = self._extract_supplier_profile_with_llm(project, materials, combined_text)
         vendor_name = self._extract_vendor_name(combined_text, materials) or supplier_profile.vendor_name
         source_url = (urls[0] if urls else "") or (supplier_profile.source_urls[0] if supplier_profile.source_urls else "")
@@ -2246,20 +2065,20 @@ class ProjectService:
         warnings: list[str] = []
 
         if not vendor_name:
-            warnings.append("未能稳定识别供应商名称，建议人工补充。")
+            warnings.append("鏈兘绋冲畾璇嗗埆渚涘簲鍟嗗悕绉帮紝寤鸿浜哄伐琛ュ厖銆?)
             vendor_name = materials[0].name.rsplit(".", 1)[0][:60]
         if not source_url:
-            warnings.append("材料中未识别出明确来源链接，建议补充官网或第三方平台链接。")
+            warnings.append("鏉愭枡涓湭璇嗗埆鍑烘槑纭潵婧愰摼鎺ワ紝寤鸿琛ュ厖瀹樼綉鎴栫涓夋柟骞冲彴閾炬帴銆?)
         if len(profile_summary) < 20:
-            warnings.append("提取到的供应商简介较少，建议补充公司介绍、官网简介或白皮书。")
+            warnings.append("鍙彁鍙栫殑渚涘簲鍟嗙畝浠嬭緝灏戯紝寤鸿琛ュ厖鍏徃浠嬬粛銆佸畼缃戠畝浠嬫垨鐧界毊涔︺€?)
 
         if supplier_profile.extraction_mode == "rules_only":
             warnings.append("Current extraction used rule-only mode because no LLM enhancement was available.")
 
         summary = (
-            f"Parsed {len(materials)} supplier material(s) and generated a draft profile. "
-            f"Identified supplier: {vendor_name or 'manual confirmation required'}. "
-            "The procurement draft fields were populated automatically."
+            f"宸蹭粠 {len(materials)} 浠芥潗鏂欎腑鎻愬彇渚涘簲鍟嗗熀纭€淇℃伅锛?
+            f"璇嗗埆鍒颁緵搴斿晢鈥渰vendor_name or '寰呬汉宸ョ‘璁?}鈥濓紝"
+            f"骞惰嚜鍔ㄨˉ鍏ㄩ噰璐〃鑽夌銆?
         )
         return (
             ProcurementAgentVendorDraft(
@@ -2279,7 +2098,7 @@ class ProjectService:
 
     def _extract_vendor_name(self, combined_text: str, materials: list[ProcurementMaterialText]) -> str:
         direct_match = re.search(
-            r"(?:Vendor Name|Company Name|供应商名称|公司名称|企业名称)\s*[:：]\s*([^\n\r;]{2,80})",
+            r"(?:Vendor Name|Company Name|供应商名称|公司名称|企业名称)\s*[:：]\s*([^\n\r;；。]{2,80})",
             combined_text,
             flags=re.IGNORECASE,
         )
@@ -2287,13 +2106,13 @@ class ProjectService:
             return direct_match.group(1).strip(" ：:;；。")
 
         patterns = [
-            r"(?:Vendor Name|Company Name|Vendor|Supplier)\s*:\s*([^\n\r;]{2,80})",
-            r"(?:Vendor|Supplier)\s*:\s*([^\n\r;]{2,80})",
+            r"(?:渚涘簲鍟嗗悕绉皘鍏徃鍚嶇О|浼佷笟鍚嶇О|Vendor Name|Company Name)[:锛歖\s*([^\n\r銆傦紱;]{2,80})",
+            r"(?:鐢叉柟|涔欐柟)[:锛歖\s*([^\n\r銆傦紱;]{2,80})",
         ]
         for pattern in patterns:
             match = re.search(pattern, combined_text, flags=re.IGNORECASE)
             if match:
-                return match.group(1).strip(" :;")
+                return match.group(1).strip("锛?锛?銆? ")
 
         first_meaningful_line = ""
         for item in materials:
@@ -2304,14 +2123,7 @@ class ProjectService:
                     break
             if first_meaningful_line:
                 break
-        trailing_ascii_name = ""
-        if first_meaningful_line:
-            ascii_name_match = re.search(r"([A-Z][A-Za-z0-9 .,&-]{2,80})$", first_meaningful_line)
-            if ascii_name_match:
-                trailing_ascii_name = ascii_name_match.group(1).strip(" :;,.")
-        if trailing_ascii_name:
-            return trailing_ascii_name
-        if first_meaningful_line and not re.search(r"(whitepaper|policy|contract|terms)", first_meaningful_line, flags=re.IGNORECASE):
+        if first_meaningful_line and not re.search(r"(鎶ヤ环|whitepaper|闅愮|policy|鍗忚|鍚堝悓)", first_meaningful_line, flags=re.IGNORECASE):
             return first_meaningful_line
         return ""
 
@@ -2322,17 +2134,17 @@ class ProjectService:
                 return host
         source_types = {item.source_type for item in materials}
         if "pdf" in source_types or "docx" in source_types:
-            return "uploaded_material"
-        return materials[0].source_type or "uploaded_material"
+            return "鏉愭枡涓婁紶"
+        return materials[0].source_type or "鏉愭枡涓婁紶"
 
     def _extract_contact_name(self, combined_text: str) -> str:
         patterns = [
-            r"(?:Contact|Contact Person|Business Contact|Procurement Contact)\s*:\s*([^\n\r:;]{2,40})",
+            r"(?:鑱旂郴浜簗鍟嗗姟鑱旂郴浜簗閲囪喘鑱旂郴浜簗Contact|Contact Person)[:锛歖\s*([^\n\r锛?銆傦紱;]{2,40})",
         ]
         for pattern in patterns:
             match = re.search(pattern, combined_text, flags=re.IGNORECASE)
             if match:
-                return match.group(1).strip(" :;")
+                return match.group(1).strip("锛?锛?銆? ")
         return ""
 
     def _extract_contact_email(self, combined_text: str) -> str:
@@ -2341,7 +2153,7 @@ class ProjectService:
 
     def _extract_contact_phone(self, combined_text: str) -> str:
         patterns = [
-            r"(?:Phone|Tel|Mobile)\s*:?\s*([+\d][\d\s\-()]{6,20})",
+            r"(?:鑱旂郴鐢佃瘽|鑱旂郴鎵嬫満|鐢佃瘽|鎵嬫満|Phone|Tel)[:锛歖?\s*([+\d][\d\s\-()]{6,20})",
             r"(\+?\d[\d\s\-()]{8,20}\d)",
         ]
         for pattern in patterns:
@@ -2354,20 +2166,20 @@ class ProjectService:
         return ""
 
     def _extract_profile_summary(self, combined_text: str) -> str:
-        segments = re.split(r"[\n。；;!?！？]+", combined_text)
+        segments = re.split(r"[\n銆傦紱;!?锛侊紵]+", combined_text)
         picked: list[str] = []
         for segment in segments:
             cleaned = re.sub(r"\s+", " ", segment).strip(" -:#")
             if len(cleaned) < 12:
                 continue
-            if any(token in cleaned.lower() for token in ["报价", "price", "invoice", "发票"]):
+            if any(token in cleaned.lower() for token in ["鎶ヤ环", "price", "invoice", "鍙戠エ"]):
                 continue
             if cleaned in picked:
                 continue
             picked.append(cleaned)
             if len(picked) >= 3:
                 break
-        return "；".join(picked)[:400]
+        return "锛?.join(picked)[:400]
 
     def _build_procurement_notes(
         self,
@@ -2378,17 +2190,17 @@ class ProjectService:
         supplier_profile: SupplierProfileInsights | None = None,
     ) -> str:
         note_lines = [
-            f"{current_user.display_name or 'Procurement'} uploaded {len(materials)} supplier material(s). Review the extracted draft before continuing.",
-            f"Current project: {project.title}. Category: {project.category or 'unspecified'}.",
-            f"Materials: {', '.join(item.name for item in materials[:4])}",
+            f"{current_user.display_name or '閲囪喘浜哄憳'} 宸蹭笂浼?{len(materials)} 浠戒緵搴斿晢鏉愭枡锛屽缓璁厛浜哄伐鏍稿鎶藉彇缁撴灉鍐嶇户缁噯鍏ュ鏌ャ€?,
+            f"褰撳墠鍏宠仈椤圭洰涓衡€渰project.title}鈥濓紝閲囪喘绫诲埆涓?{project.category or '鏈～鍐?}銆?,
+            f"鏉愭枡娓呭崟锛歿', '.join(item.name for item in materials[:4])}",
         ]
         lowered = combined_text.lower()
-        if "price" in lowered or "fee" in lowered or "报价" in combined_text:
-            note_lines.append("Commercial or pricing terms were detected in the materials.")
-        if project.data_scope != "none" or "data" in lowered or "数据" in combined_text:
-            note_lines.append("The project or materials suggest a data-processing scenario, so compliance and security should be checked closely.")
-        if "agreement" in lowered or "msa" in lowered or "合同" in combined_text:
-            note_lines.append("Contract-related content was detected and can be reused in the legal review stage.")
+        if "鎶ヤ环" in combined_text or "price" in lowered or "fee" in lowered:
+            note_lines.append("鏉愭枡涓寘鍚姤浠锋垨鍟嗗姟鏉′欢锛屽缓璁粨鍚堥噰璐瘮浠风粨鏋滀竴骞跺鏍搞€?)
+        if project.data_scope != "none" or "鏁版嵁" in combined_text or "data" in lowered:
+            note_lines.append("椤圭洰鎴栨潗鏂欐秹鍙婃暟鎹鐞嗗満鏅紝鍚庣画闇€閲嶇偣鍏虫敞鏁版嵁鍚堣涓庡畨鍏ㄨ姹傘€?)
+        if "鍚堝悓" in combined_text or "agreement" in lowered or "msa" in lowered:
+            note_lines.append("鏉愭枡涓凡鍑虹幇鍚堝悓鎴栧崗璁浉鍏冲唴瀹癸紝鍙湪鍚庣画娉曞姟闃舵缁х画澶嶇敤銆?)
         if supplier_profile:
             if supplier_profile.data_involvement:
                 note_lines.append(f"LLM-detected data signal: {supplier_profile.data_involvement}")
@@ -2399,16 +2211,14 @@ class ProjectService:
             if supplier_profile.missing_materials:
                 note_lines.append(f"LLM-detected missing materials: {'; '.join(supplier_profile.missing_materials[:3])}")
         return " ".join(note_lines)[:500]
+
     def _extract_supplier_profile_with_llm(
         self,
         project: ProcurementProject,
         materials: list[ProcurementMaterialText],
         combined_text: str,
     ) -> SupplierProfileInsights:
-        llm_client = getattr(self.agent_service, "llm_client", None)
-        if llm_client is None or not hasattr(llm_client, "extract_supplier_profile"):
-            return SupplierProfileInsights()
-        payload = llm_client.extract_supplier_profile(
+        payload = self.agent_service.llm_client.extract_supplier_profile(
             project_context={
                 "title": project.title,
                 "category": project.category,
@@ -2427,7 +2237,7 @@ class ProjectService:
         def _as_list(key: str, limit: int = 6) -> tuple[str, ...]:
             raw_value = payload.get(key, [])
             if isinstance(raw_value, str):
-                raw_items = [item.strip() for item in re.split(r"[\n;,，；]+", raw_value) if item.strip()]
+                raw_items = [item.strip() for item in re.split(r"[\n;,锛岋紱]+", raw_value) if item.strip()]
             elif isinstance(raw_value, list):
                 raw_items = [str(item).strip() for item in raw_value if str(item).strip()]
             else:
@@ -2468,7 +2278,7 @@ class ProjectService:
             if segment in merged:
                 continue
             merged.append(segment)
-        return "?".join(merged)[:500]
+        return "锛?.join(merged)[:500]
 
     def _serialize_supplier_profile(self, supplier_profile: SupplierProfileInsights | None) -> SupplierProfileRead | None:
         if supplier_profile is None:
@@ -2506,54 +2316,195 @@ class ProjectService:
         supplier_profile: SupplierProfileInsights | None = None,
     ) -> str:
         lines = [
-            "你是企业内部采购准入审查助手。",
-            "不要把这次审查当成通用问答，请基于内部采购制度判断该供应商是否适合继续进入采购人工确认，并进一步进入法务审查。",
-            "请结合内部采购制度库识别当前阻塞点、风险点、缺失材料和建议的下一步动作。",
+            "璇锋墽琛屼竴杞噰璐緵搴斿晢鍑嗗叆 Agent 瀹℃煡浠诲姟銆?,
+            "涓嶈鎶婅繖褰撴垚鏅€氶棶绛旓紝鑰屾槸瑕佷富鍔ㄥ垽鏂渚涘簲鍟嗘槸鍚﹂€傚悎杩涘叆浜哄伐纭涓庡悗缁硶鍔￠樁娈点€?,
+            "璇峰熀浜庢湰鍦颁緵搴斿晢鍑嗗叆鍒跺害銆侀噰璐祦绋嬨€佸鎵圭煩闃靛拰瀹夊叏/鍚堣璧勬枡瀹屾垚浠ヤ笅鍔ㄤ綔锛?,
+            "1. 鍒ゆ柇璇ヤ緵搴斿晢鏄惁寤鸿缁х画缁戝畾鍒板綋鍓嶉」鐩€?,
+            "2. 鎬荤粨涓昏椋庨櫓鐐瑰拰闃诲椤广€?,
+            "3. 鎸囧嚭褰撳墠杩樼己鍝簺鍑嗗叆鏉愭枡鎴栧叕寮€淇℃伅銆?,
+            "4. 缁欏嚭涓嬩竴姝ュ缓璁姩浣滐紝鍙綔涓洪噰璐緟鍔╃粨璁猴紝涓嶆浛浠ｄ汉宸ユ渶缁堝喅瀹氥€?,
             "",
-            "项目背景：",
-            f"- 项目名称：{project.title}",
-            f"- 申请部门：{project.department}",
-            f"- 采购类别：{project.category}",
-            f"- 预算：{project.budget_amount} {project.currency}",
-            f"- 采购目的：{project.summary or '未提供'}",
-            f"- 业务价值：{project.business_value or '未提供'}",
-            f"- 预计上线时间：{project.target_go_live_date or '未提供'}",
-            f"- 数据范围：{project.data_scope or 'none'}",
+            "褰撳墠椤圭洰鑳屾櫙锛?,
+            f"- 椤圭洰鍚嶇О锛歿project.title}",
+            f"- 鍙戣捣閮ㄩ棬锛歿project.department}",
+            f"- 閲囪喘绫诲埆锛歿project.category}",
+            f"- 棰勭畻锛歿project.budget_amount} {project.currency}",
+            f"- 閲囪喘鐩殑锛歿project.summary or '鏈～鍐?}",
+            f"- 涓氬姟浠峰€硷細{project.business_value or '鏈～鍐?}",
+            f"- 璁″垝涓婄嚎鏃堕棿锛歿project.target_go_live_date or '鏈～鍐?}",
+            f"- 鏁版嵁鑼冨洿锛歿project.data_scope or 'none'}",
             "",
-            "供应商草稿：",
-            f"- 供应商名称：{draft.vendor_name}",
-            f"- 来源平台：{draft.source_platform}",
-            f"- 来源链接：{draft.source_url or '未提供'}",
-            f"- 供应商简介：{draft.profile_summary}",
-            f"- 采购备注：{draft.procurement_notes}",
+            "寰呭鏌ヤ緵搴斿晢鑽夌锛?,
+            f"- 渚涘簲鍟嗗悕绉帮細{draft.vendor_name}",
+            f"- 鏉ユ簮骞冲彴锛歿draft.source_platform}",
+            f"- 鏉ユ簮閾炬帴锛歿draft.source_url or '鏈彁渚?}",
+            f"- 渚涘簲鍟嗙畝浠嬶細{draft.profile_summary}",
+            f"- 閲囪喘璇存槑锛歿draft.procurement_notes}",
         ]
-        if supplier_profile and any([
-            supplier_profile.company_summary,
-            supplier_profile.products_services,
-            supplier_profile.data_involvement,
-            supplier_profile.security_signals,
-            supplier_profile.legal_signals,
-        ]):
-            lines.extend([
-                "",
-                "LLM 增强供应商画像：",
-                f"- 提取模式：{supplier_profile.extraction_mode}",
-                f"- 公司概述：{supplier_profile.company_summary or '未提供'}",
-                f"- 产品/服务：{supplier_profile.products_services or '未提供'}",
-                f"- 数据参与情况：{supplier_profile.data_involvement or '未识别'}",
-                f"- 安全信号：{'; '.join(supplier_profile.security_signals[:3]) or '未识别'}",
-                f"- 法务信号：{'; '.join(supplier_profile.legal_signals[:3]) or '未识别'}",
-                f"- 建议补充材料：{'; '.join(supplier_profile.missing_materials[:4]) or '未识别'}",
-            ])
+        if supplier_profile and any(
+            [
+                supplier_profile.company_summary,
+                supplier_profile.products_services,
+                supplier_profile.data_involvement,
+                supplier_profile.security_signals,
+                supplier_profile.legal_signals,
+            ]
+        ):
+            lines.extend(
+                [
+                    "",
+                    "妯″瀷琛ュ厖鐢诲儚锛?,
+                    f"- 鎶藉彇妯″紡锛歿supplier_profile.extraction_mode}",
+                    f"- 渚涘簲鍟嗘杩帮細{supplier_profile.company_summary or '鏈ˉ鍏?}",
+                    f"- 浜у搧/鏈嶅姟锛歿supplier_profile.products_services or '鏈ˉ鍏?}",
+                    f"- 鏁版嵁澶勭悊淇″彿锛歿supplier_profile.data_involvement or '鏈瘑鍒?}",
+                    f"- 瀹夊叏淇″彿锛歿'锛?.join(supplier_profile.security_signals[:3]) or '鏈瘑鍒?}",
+                    f"- 娉曞姟淇″彿锛歿'锛?.join(supplier_profile.legal_signals[:3]) or '鏈瘑鍒?}",
+                    f"- 缂哄け鏉愭枡锛歿'锛?.join(supplier_profile.missing_materials[:4]) or '鏈瘑鍒?}",
+                ]
+            )
         if focus_points.strip():
-            lines.extend([
-                "",
-                "采购关注点：",
-                focus_points.strip(),
-            ])
-        return "\n".join(lines)
+            lines.extend(
+                [
+                    "",
+                    "閲囪喘琛ュ厖鍏虫敞鐐癸細",
+                    focus_points.strip(),
+                ]
+            )
         return "\n".join(lines)
 
+    def _build_procurement_agent_assessment(
+        self,
+        project: ProcurementProject,
+        draft: ProcurementAgentVendorDraft,
+        review,
+        focus_points: str,
+        supplier_profile: SupplierProfileInsights | None = None,
+    ) -> StructuredReviewRead:
+        raw_risk_flags = self._extract_risk_flags(review)
+        readable_risks = [self._risk_summary_from_flag(flag) for flag in raw_risk_flags]
+        legal_handoff = self._derive_procurement_legal_handoff(project, review, raw_risk_flags)
+        if draft.ai_recommendation == "recommend_proceed":
+            conclusion = "寤鸿閲囪喘鍙户缁汉宸ョ‘璁わ紝骞跺湪纭鏃犺鍚庣粦瀹氬埌褰撳墠椤圭洰銆?
+        elif draft.ai_recommendation == "review_with_risks":
+            conclusion = "瀛樺湪椋庨櫓浣嗕粛鍙户缁汉宸ュ鏍革紝寤鸿琛ラ綈鍏抽敭鏉愭枡鍚庡啀鍐冲畾鏄惁缁戝畾銆?
+        else:
+            conclusion = "褰撳墠淇℃伅浠嶄笉瓒筹紝寤鸿缁х画鏀堕泦鍏紑璧勬枡鍜屽噯鍏ユ潗鏂欏悗鍐嶅喅瀹氭槸鍚︾粦瀹氥€?
+
+        completeness_ready = all(
+            [
+                draft.vendor_name,
+                draft.source_platform,
+                len(draft.profile_summary) >= 10,
+                len(draft.procurement_notes) >= 10,
+            ]
+        )
+        source_traceable = bool(draft.source_platform and (draft.source_url or "瀹樼綉" in draft.source_platform))
+        data_scope_sensitive = (project.data_scope or "none") != "none"
+
+        check_items = [
+            StructuredCheckItemRead(
+                label="渚涘簲鍟嗗熀纭€淇℃伅瀹屾暣搴?,
+                status="pass" if completeness_ready else "warn",
+                detail="宸插叿澶囦緵搴斿晢鍚嶇О銆佹潵婧愬钩鍙般€佺畝浠嬪拰閲囪喘璇存槑銆? if completeness_ready else "渚涘簲鍟嗗熀鏈俊鎭粛涓嶅畬鏁达紝寤鸿缁х画琛ラ綈銆?,
+            ),
+            StructuredCheckItemRead(
+                label="鏉ユ簮鍙拷婧€?,
+                status="pass" if source_traceable else "warn",
+                detail="褰撳墠宸插叿澶囧彲杩芥函鐨勫钩鍙版垨鏉ユ簮閾炬帴銆? if source_traceable else "寤鸿琛ュ厖瀹樼綉銆佺涓夋柟骞冲彴閾炬帴鎴栧叾浠栧叕寮€鏉ユ簮渚濇嵁銆?,
+            ),
+            StructuredCheckItemRead(
+                label="鏁版嵁涓庡悎瑙勫叧娉?,
+                status="fail" if readable_risks else "warn" if data_scope_sensitive else "pass",
+                detail="锛?.join(readable_risks[:3]) if readable_risks else "褰撳墠鏈彂鐜版槑纭殑缁撴瀯鍖栭闄╂爣璁帮紝浣嗘秹鍙婃暟鎹満鏅粛寤鸿缁х画浜哄伐纭銆? if data_scope_sensitive else "褰撳墠鏈彂鐜版槑纭殑缁撴瀯鍖栭闄╂爣璁般€?,
+            ),
+            StructuredCheckItemRead(
+                label="Agent 鍑嗗叆寤鸿",
+                status="pass" if draft.ai_recommendation == "recommend_proceed" else "warn" if draft.ai_recommendation == "needs_follow_up" else "fail",
+                detail=conclusion,
+            ),
+        ]
+
+        open_questions: list[str] = []
+        if not draft.source_url:
+            open_questions.append("琛ュ厖渚涘簲鍟嗗畼缃戞垨鍏紑璧勬枡閾炬帴锛屼究浜庡悗缁汉宸ュ鏍搞€?)
+        if data_scope_sensitive:
+            open_questions.append("纭渚涘簲鍟嗘槸鍚﹀鐞嗛」鐩浉鍏虫暟鎹紝骞惰ˉ鍏呴殣绉佹斂绛栥€佸畨鍏ㄧ櫧鐨功鎴栨暟鎹鐞嗚鏄庛€?)
+        if review.next_action != "answer":
+            open_questions.append("褰撳墠璇佹嵁瑕嗙洊涓嶈冻锛屽缓璁户缁ˉ鍏呭叕寮€璧勬枡銆佸噯鍏ユ潗鏂欐垨鏇存槑纭殑涓氬姟鑳屾櫙銆?)
+        if focus_points.strip():
+            open_questions.append(f"閽堝閲囪喘鍏虫敞鐐光€渰focus_points.strip()}鈥濈户缁仛浜哄伐澶嶆牳銆?)
+        if supplier_profile and supplier_profile.missing_materials:
+            open_questions.append(f"浼樺厛琛ラ綈杩欎簺鏉愭枡锛歿'锛?.join(supplier_profile.missing_materials[:3])}銆?)
+
+        return StructuredReviewRead(
+            review_kind="procurement_agent_review",
+            conclusion=conclusion,
+            recommendation=draft.ai_recommendation or "needs_follow_up",
+            summary=review.answer,
+            next_step=legal_handoff["next_step"],
+            legal_handoff_recommendation=legal_handoff["recommendation"],
+            legal_handoff_reason=legal_handoff["reason"],
+            check_items=check_items,
+            risk_flags=readable_risks,
+            open_questions=open_questions[:4],
+            evidence=self._build_evidence_items(review),
+        )
+
+    def _derive_procurement_legal_handoff(
+        self,
+        project: ProcurementProject,
+        review,
+        raw_risk_flags: list[str],
+    ) -> dict[str, str]:
+        if review.next_action != "answer":
+            return {
+                "recommendation": "wait_for_more_materials",
+                "reason": "褰撳墠鏉愭枡鎴栧紩鐢ㄨ瘉鎹笉瓒筹紝寤鸿鍏堣ˉ榻愪緵搴斿晢鏉愭枡鍚庡啀鍐冲畾鏄惁杞硶鍔°€?,
+                "next_step": "琛ラ綈鏉愭枡鍚庨噸鏂拌繍琛?Agent 瀹℃煡銆?,
+            }
+
+        evidence_text = "\n".join(
+            [review.answer, *(citation.snippet for citation in list(review.citations or [])[:4])]
+        ).lower()
+        escalation_terms = (
+            "鍗囩骇娉曞姟",
+            "浜ょ粰娉曞姟",
+            "娉曞姟瀹℃煡",
+            "娉曞姟瀹℃壒",
+            "legal review",
+            "legal approval",
+            "璐ｄ换涓婇檺",
+            "璧斿伩",
+            "瀹¤鏉?,
+            "鏁版嵁澶勭悊",
+            "璺ㄥ",
+            "涓汉淇℃伅",
+        )
+        requires_legal_review = bool(raw_risk_flags) or any(term in evidence_text for term in escalation_terms)
+
+        if requires_legal_review:
+            reason = "RAG 寮曠敤鍒扮殑鍒跺害/鏉℃鏄剧ず褰撳墠渚涘簲鍟嗗瓨鍦ㄦ硶鍔℃垨鍚堣鍗囩骇淇″彿锛屽缓璁浆娉曞姟澶嶆牳銆?
+            if raw_risk_flags:
+                reason = f"{reason} 瑙﹀彂椋庨櫓鐐癸細{self._risk_summary_from_flag(raw_risk_flags[0])}"
+            return {
+                "recommendation": "suggest_legal_review",
+                "reason": reason,
+                "next_step": "鐢遍噰璐ˉ榻愬繀瑕佹潗鏂欏悗锛屾彁浜ゆ硶鍔¤繘琛岃繘涓€姝ュ鏌ャ€?,
+            }
+
+        if (project.data_scope or "none") != "none":
+            return {
+                "recommendation": "hold_for_procurement",
+                "reason": "褰撳墠鏈Е鍙戞槑纭硶鍔″崌绾ф潯浠讹紝浣嗛」鐩秹鍙婃暟鎹満鏅紝寤鸿閲囪喘浜哄伐纭鏉愭枡瀹屾暣搴﹀悗鍐嶅喅瀹氭槸鍚﹂€佹硶鍔°€?,
+                "next_step": "鍏堢敱閲囪喘纭鏁版嵁銆佸畨鍏ㄤ笌渚涘簲鍟嗗熀纭€鏉愭枡鏄惁榻愬叏銆?,
+            }
+
+        return {
+            "recommendation": "hold_for_procurement",
+            "reason": "褰撳墠 RAG 璇佹嵁鏈樉绀哄繀椤荤珛鍗宠浆娉曞姟锛屽彲鍏堢敱閲囪喘缁撳悎鎶ュ憡鍋氫汉宸ュ鏍搞€?,
+            "next_step": "鍏堝畬鎴愰噰璐汉宸ョ‘璁わ紝鍐嶅喅瀹氭槸鍚︾粦瀹氫緵搴斿晢銆?,
+        }
 
     def _prepare_procurement_review_inputs(
         self,
@@ -2593,9 +2544,9 @@ class ProjectService:
         if any(
             token in text
             for token in [
-                "营业执照",
-                "统一社会信用代码",
-                "法定代表人",
+                "钀ヤ笟鎵х収",
+                "缁熶竴绀句細淇＄敤浠ｇ爜",
+                "娉曞畾浠ｈ〃浜?,
                 "bank account",
                 "tax registration",
                 "audit report",
@@ -2610,7 +2561,7 @@ class ProjectService:
         ):
             matched.append("supplier_identity")
 
-        if self._find_valid_source_urls(text) or any(token in text for token in ["官网", "official site", "company website"]):
+        if self._find_valid_source_urls(text) or any(token in text for token in ["瀹樼綉", "official site", "company website"]):
             matched.append("public_source")
 
         if any(
@@ -2621,12 +2572,12 @@ class ProjectService:
                 "platform",
                 "api",
                 "integration",
-                "工单",
-                "客服",
+                "宸ュ崟",
+                "瀹㈡湇",
                 "ticket",
                 "dashboard",
-                "产品介绍",
-                "服务说明",
+                "浜у搧浠嬬粛",
+                "鏈嶅姟璇存槑",
                 "product overview",
                 "service overview",
                 "whitepaper",
@@ -2637,16 +2588,16 @@ class ProjectService:
         if any(
             token in text
             for token in [
-                "报价",
+                "鎶ヤ环",
                 "quote",
                 "pricing",
-                "费用",
+                "璐圭敤",
                 "fee",
-                "商业方案",
+                "鍟嗕笟鏂规",
                 "proposal",
                 "sow",
                 "poc",
-                "采购说明",
+                "閲囪喘璇存槑",
             ]
         ):
             matched.append("commercial")
@@ -2654,19 +2605,19 @@ class ProjectService:
         if any(
             token in text
             for token in [
-                "安全",
+                "瀹夊叏",
                 "security",
                 "iso27001",
                 "soc 2",
                 "soc2",
                 "privacy",
-                "隐",
+                "闅愮",
                 "penetration",
                 "encryption",
                 "questionnaire",
-                "白皮书",
+                "鐧界毊涔?,
                 "compliance",
-                "合规",
+                "鍚堣",
             ]
         ):
             matched.append("security_compliance")
@@ -2674,20 +2625,20 @@ class ProjectService:
         if any(
             token in text
             for token in [
-                "合同",
-                "协议",
+                "鍚堝悓",
+                "鍗忚",
                 "msa",
                 "dpa",
-                "条款",
-                "审计权",
-                "责任上限",
-                "赔偿",
+                "鏉℃",
+                "瀹¤鏉?,
+                "璐ｄ换涓婇檺",
+                "璧斿伩",
                 "incident notice",
                 "security incident",
                 "data processing",
                 "subprocessor",
-                "分包",
-                "子处理",
+                "鍒嗗寘",
+                "瀛愬鐞嗚€?,
             ]
         ):
             matched.append("contract_terms")
@@ -2699,12 +2650,10 @@ class ProjectService:
         return tuple(dict.fromkeys(matched))
 
     def _find_valid_source_urls(self, text: str) -> tuple[str, ...]:
-        found = re.findall(r"(?:https?://|ttps?://)[^\s)>\"]+", text or "")
+        found = re.findall(r"https?://[^\s)>\"]+", text or "")
         urls: list[str] = []
         for raw_url in found:
             url = raw_url.rstrip(".,;)]}")
-            if url.startswith("ttp://") or url.startswith("ttps://"):
-                url = f"h{url}"
             if self._looks_like_social_source(url) or self._looks_like_academic_source(url):
                 continue
             urls.append(url)
@@ -2755,10 +2704,10 @@ class ProjectService:
             "doi",
             "journal",
             "conference",
-            "论文",
-            "摘要",
-            "参考文献",
-            "基金项目",
+            "璁烘枃",
+            "鎽樿",
+            "鍙傝€冩枃鐚?,
+            "鍩洪噾椤圭洰",
         ]
         return sum(1 for token in academic_tokens if token in lowered) >= 2
 
@@ -2770,7 +2719,7 @@ class ProjectService:
             return True
         return any(
             token in normalized
-            for token in ["报价", "白皮书", "合同", "协议", "paper", "report", "附件", "扫描件", "截图"]
+            for token in ["鎶ヤ环鍗?, "鐧界毊涔?, "鍚堝悓", "鍗忚", "paper", "report", "闄勪欢", "鎴浘", "鎵弿浠?]
         )
 
     def _evaluate_procurement_material_gate(
@@ -2783,7 +2732,7 @@ class ProjectService:
             return ProcurementMaterialGate(
                 decision="fail",
                 relevance_score=0.0,
-                blocking_reasons=("No supplier materials were uploaded.",),
+                blocking_reasons=("鏈笂浼犱换浣曚緵搴斿晢鏉愭枡銆?,),
             )
 
         matched_types: list[str] = []
@@ -2826,15 +2775,15 @@ class ProjectService:
 
         blocking_reasons: list[str] = []
         if irrelevant_count == len(materials):
-            blocking_reasons.append("上传内容看起来不像供应商准入材料，未识别到主体材料、官网来源或产品服务说明。")
+            blocking_reasons.append("涓婁紶鍐呭鐪嬭捣鏉ヤ笉鍍忎緵搴斿晢鍑嗗叆鏉愭枡锛屾湭璇嗗埆鍒颁富浣撴潗鏂欍€佸畼缃戞潵婧愭垨浜у搧鏈嶅姟璇存槑銆?)
         if academic_count == len(materials):
-            blocking_reasons.append("上传内容更像论文或研究资料，不能作为供应商准入依据。")
+            blocking_reasons.append("涓婁紶鍐呭鏇村儚璁烘枃鎴栫爺绌惰祫鏂欙紝涓嶈兘浣滀负渚涘簲鍟嗗噯鍏ヤ緷鎹€?)
         if social_only_count == len(materials) and not valid_source_urls:
-            blocking_reasons.append("当前仅识别到社交平台或不可追溯来源，不能单独作为准入依据。")
+            blocking_reasons.append("褰撳墠鍙瘑鍒埌绀句氦骞冲彴鎴栦笉鍙拷婧潵婧愶紝涓嶈兘鍗曠嫭浣滀负鍑嗗叆渚濇嵁銆?)
         if not subject_evidence:
-            blocking_reasons.append("无法确认供应商主体身份，缺少主体信息或可追溯公开来源。")
+            blocking_reasons.append("鏃犳硶纭渚涘簲鍟嗕富浣撹韩浠斤紝缂哄皯涓讳綋淇℃伅鎴栧彲杩芥函鍏紑鏉ユ簮銆?)
         if not capability_evidence:
-            blocking_reasons.append("无法确认供应商产品或服务能力，缺少产品说明、方案或报价材料。")
+            blocking_reasons.append("鏃犳硶纭渚涘簲鍟嗕骇鍝佹垨鏈嶅姟鑳藉姏锛岀己灏戜骇鍝佽鏄庛€佹柟妗堟垨鎶ヤ环鏉愭枡銆?)
 
         evidence_hits = 0
         evidence_hits += 1 if vendor_name_valid else 0
@@ -2860,18 +2809,14 @@ class ProjectService:
     ) -> SupplierDossier:
         combined_text = "\n\n".join(item.text for item in materials)
         vendor_name = (draft.vendor_name or (supplier_profile.vendor_name if supplier_profile else "")).strip()
-        lowered = combined_text.lower()
-
         legal_entity = ""
         legal_match = re.search(
-            r"([A-Z][A-Za-z0-9 .,&-]{2,80}(?:Ltd|Limited|LLC|Inc|Corp|Corporation|Company))",
+            r"([A-Z][A-Za-z0-9 .,&-]{2,80}(?:Ltd|Limited|LLC|Inc|Corp|Corporation)|[^\n\r]{2,80}(?:鏈夐檺鍏徃|鑲′唤鏈夐檺鍏徃|鏈夐檺璐ｄ换鍏徃))",
             combined_text,
             flags=re.IGNORECASE,
         )
         if legal_match:
-            legal_entity = legal_match.group(1).strip(" :;,.??")
-        elif vendor_name:
-            legal_entity = vendor_name
+            legal_entity = legal_match.group(1).strip("锛?锛?銆?")
 
         source_urls = list(self._find_valid_source_urls(combined_text))
         if draft.source_url and draft.source_url not in source_urls and not self._looks_like_social_source(draft.source_url) and not self._looks_like_academic_source(draft.source_url):
@@ -2881,7 +2826,8 @@ class ProjectService:
                 if url not in source_urls and not self._looks_like_social_source(url) and not self._looks_like_academic_source(url):
                     source_urls.append(url)
 
-        if any(token in lowered for token in ["saas", "cloud", "hosting", "multi-tenant"]):
+        lowered = combined_text.lower()
+        if any(token in lowered for token in ["saas", "cloud", "hosting", "multi-tenant", "浜戞湇鍔?]):
             service_model = "software_saas"
         elif any(token in lowered for token in ["api", "platform", "integration", "sdk"]):
             service_model = "software_platform"
@@ -2890,25 +2836,43 @@ class ProjectService:
 
         if project.data_scope and project.data_scope != "none":
             data_access_level = project.data_scope
-        elif any(token in lowered for token in ["personal information", "personal data", "customer data", "data processing", "api", "saas", "login", "account"]):
+        elif any(
+            token in lowered
+            for token in [
+                "personal information",
+                "personal data",
+                "customer data",
+                "data processing",
+                "宸ュ崟鏁版嵁",
+                "瀹㈡埛鏁版嵁",
+                "涓汉淇℃伅",
+                "鐧诲綍",
+                "璐﹀彿",
+                "api",
+                "saas",
+            ]
+        ):
             data_access_level = "customer_data"
         else:
             data_access_level = "none"
 
         hosting_region = ""
         hosting_patterns = [
-            ("mainland_china", r"(mainland china|china mainland|beijing region|shanghai region|cn-north|cn-east)"),
-            ("china", r"(china|domestic deployment)"),
-            ("singapore", r"(singapore)"),
-            ("united_states", r"(united states|us-east|us-west)"),
-            ("europe", r"(eu|europe|frankfurt|ireland)"),
+            ("涓浗澶ч檰", r"(涓浗澶ч檰|澧冨唴|闃块噷浜戞澀宸瀨鍗庡寳\d)"),
+            ("涓浗", r"(?<!澶ч檰)(涓浗|鍥藉唴閮ㄧ讲)"),
+            ("鏂板姞鍧?, r"(鏂板姞鍧singapore)"),
+            ("缇庡浗", r"(缇庡浗|us-east|us-west|united states)"),
+            ("娆х洘", r"(eu|europe|娉曞叞鍏嬬|鐖卞皵鍏?"),
         ]
         for label, pattern in hosting_patterns:
             if re.search(pattern, combined_text, flags=re.IGNORECASE):
                 hosting_region = label
                 break
 
-        subprocessor_signal = "mentioned" if any(token in lowered for token in ["subprocessor", "subprocessors", "third-party processor", "outsourced processing"]) else "not_mentioned"
+        if any(token in lowered for token in ["subprocessor", "subprocessors", "鍒嗗寘", "瀛愬鐞嗚€?, "绗笁鏂瑰鐞嗘柟"]):
+            subprocessor_signal = "mentioned"
+        else:
+            subprocessor_signal = "not_mentioned"
 
         security_signal_summary: list[str] = []
         if supplier_profile:
@@ -2917,10 +2881,10 @@ class ProjectService:
             ("iso27001", "ISO27001"),
             ("soc2", "SOC2"),
             ("soc 2", "SOC2"),
-            ("penetration", "penetration testing"),
-            ("encryption", "encryption capability"),
-            ("incident", "security incident response"),
-            ("privacy", "privacy statement"),
+            ("penetration", "娓楅€忔祴璇?),
+            ("encryption", "鍔犲瘑鑳藉姏"),
+            ("incident", "瀹夊叏浜嬩欢鍝嶅簲"),
+            ("privacy", "闅愮璇存槑"),
         ]:
             if token in lowered and label not in security_signal_summary:
                 security_signal_summary.append(label)
@@ -2935,7 +2899,6 @@ class ProjectService:
             subprocessor_signal=subprocessor_signal,
             security_signal_summary=tuple(security_signal_summary[:6]),
         )
-
 
     def _is_data_related_supplier(
         self,
@@ -2961,7 +2924,7 @@ class ProjectService:
                 "cloud service",
                 "宸ュ崟",
                 "鐧诲綍",
-                "为信息",
+                "涓汉淇℃伅",
                 "瀹㈡埛鏁版嵁",
             ]
         ):
@@ -2988,7 +2951,7 @@ class ProjectService:
         checks.append(
             ProcurementRequirementCheck(
                 key="supplier_identity",
-                label="供应商主体信息",
+                label="渚涘簲鍟嗕富浣撲俊鎭?,
                 status="pass"
                 if bool(
                     supplier_dossier.legal_entity
@@ -2997,37 +2960,37 @@ class ProjectService:
                 )
                 else "missing",
                 evidence_titles=evidence_titles(lambda _n, kinds: "supplier_identity" in kinds),
-                detail="需要营业执照、企业主体信息或等效主体证明材料。",
+                detail="闇€瑕佽惀涓氭墽鐓с€佷紒涓氫富浣撲俊鎭垨绛夋晥涓讳綋璇佹槑鏉愭枡銆?,
             )
         )
         checks.append(
             ProcurementRequirementCheck(
                 key="service_capability",
-                label="产品/服务说明",
+                label="浜у搧/鏈嶅姟璇存槑",
                 status="pass"
                 if bool(draft.profile_summary.strip())
                 and bool(evidence_titles(lambda _n, kinds: "product_service" in kinds or "commercial" in kinds))
                 else "missing",
                 evidence_titles=evidence_titles(lambda _n, kinds: "product_service" in kinds or "commercial" in kinds),
-                detail="需要能说明软件/SaaS 产品能力、服务范围或报价方案的材料。",
+                detail="闇€瑕佽兘璇存槑杞欢/SaaS浜у搧鑳藉姏銆佹湇鍔¤寖鍥存垨鎶ヤ环鏂规鐨勬潗鏂欍€?,
             )
         )
         checks.append(
             ProcurementRequirementCheck(
                 key="public_source",
-                label="可追溯公开来源",
+                label="鍙拷婧叕寮€鏉ユ簮",
                 status="pass" if supplier_dossier.source_urls else "missing",
                 evidence_titles=evidence_titles(lambda _n, kinds: "public_source" in kinds),
-                detail="至少需要官网或其他可追溯公开来源，社交平台和论文链接不能单独作为依据。",
+                detail="鑷冲皯闇€瑕佸畼缃戞垨鍏朵粬鍙拷婧叕寮€鏉ユ簮锛岀ぞ浜ゅ钩鍙板拰璁烘枃閾炬帴涓嶈兘鍗曠嫭浣滀负渚濇嵁銆?,
             )
         )
         checks.append(
             ProcurementRequirementCheck(
                 key="procurement_context",
-                label="采购用途/商务背景",
+                label="閲囪喘鐢ㄩ€?鍟嗗姟鑳屾櫙",
                 status="pass" if bool(project.summary.strip() or draft.procurement_notes.strip()) else "missing",
                 evidence_titles=evidence_titles(lambda _n, kinds: "commercial" in kinds),
-                detail="需要说明为何采购该供应商、业务场景和采购背景。",
+                detail="闇€瑕佽鏄庝负浣曢噰璐渚涘簲鍟嗐€佷笟鍔″満鏅拰閲囪喘鑳屾櫙銆?,
             )
         )
 
@@ -3035,27 +2998,27 @@ class ProjectService:
         extra_checks = [
             (
                 "security_questionnaire",
-                "安全问卷或安全白皮书",
-                any(token in lowered for token in ["security questionnaire", "问卷", "security whitepaper", "安全白皮书", "soc2", "iso27001"]),
-                "需要安全问卷、安全白皮书或等效安全能力材料。",
+                "瀹夊叏闂嵎鎴栧畨鍏ㄧ櫧鐨功",
+                any(token in lowered for token in ["security questionnaire", "闂嵎", "security whitepaper", "瀹夊叏鐧界毊涔?, "soc2", "iso27001"]),
+                "闇€瑕佸畨鍏ㄩ棶鍗枫€佸畨鍏ㄧ櫧鐨功鎴栫瓑鏁堝畨鍏ㄨ兘鍔涙潗鏂欍€?,
             ),
             (
                 "data_processing_description",
-                "数据处理说明或隐私/DPA材料",
-                any(token in lowered for token in ["dpa", "data processing", "privacy", "隐", "数据处理"]),
-                "需要提供数据处理说明、隐私政策或 DPA 相关材料。",
+                "鏁版嵁澶勭悊璇存槑鎴栭殣绉?DPA鏉愭枡",
+                any(token in lowered for token in ["dpa", "data processing", "privacy", "闅愮", "鏁版嵁澶勭悊"]),
+                "闇€瑕佹彁渚涙暟鎹鐞嗚鏄庛€侀殣绉佹斂绛栨垨DPA鐩稿叧鏉愭枡銆?,
             ),
             (
                 "hosting_or_data_flow",
-                "数据存储/部署/数据流说明",
-                any(token in lowered for token in ["data flow", "deployment", "hosting", "region", "data residency", "storage location"]) or bool(supplier_dossier.hosting_region),
-                "需要提供部署方式、数据流或数据存储位置说明。",
+                "鏁版嵁瀛樺偍/閮ㄧ讲/鏁版嵁娴佽鏄?,
+                any(token in lowered for token in ["data flow", "鏋舵瀯鍥?, "deployment", "hosting", "region", "鏁版嵁娴?, "閮ㄧ讲", "瀛樺偍浣嶇疆"]) or bool(supplier_dossier.hosting_region),
+                "闇€瑕佹彁渚涢儴缃叉柟寮忋€佹暟鎹祦鎴栨暟鎹瓨鍌ㄤ綅缃鏄庛€?,
             ),
             (
                 "incident_notification_commitment",
-                "安全事件通知承诺",
+                "瀹夊叏浜嬩欢閫氱煡鎵胯",
                 any(token in lowered for token in ["security incident", "incident notice", "24 hours", "24 灏忔椂", "24灏忔椂", "瀹夊叏浜嬩欢閫氱煡", "浜嬩欢閫氭姤"]),
-                "需要提供安全事件通知承诺或等效条款。",
+                "闇€瑕佹彁渚涘畨鍏ㄤ簨浠堕€氱煡鎵胯鎴栫瓑鏁堟潯娆俱€?,
             ),
         ]
         for key, label, passed, detail in extra_checks:
@@ -3112,215 +3075,6 @@ class ProjectService:
                 hard_flags.append(flag)
         return list(dict.fromkeys(hard_flags))
 
-    def _build_tool_call_read(
-        self,
-        *,
-        tool_name: str,
-        purpose: str,
-        status: str,
-        input_summary: str,
-        output_summary: str,
-    ) -> ToolCallRead:
-        return ToolCallRead(
-            tool_name=tool_name,
-            purpose=purpose,
-            status=status,
-            input_summary=input_summary,
-            output_summary=output_summary,
-        )
-
-    def _build_procurement_precheck_tool_trace(
-        self,
-        *,
-        material_gate: ProcurementMaterialGate,
-        requirement_checks: list[ProcurementRequirementCheck],
-        supplier_dossier: SupplierDossier,
-    ) -> list[ToolCallRead]:
-        missing_required = [check.label for check in requirement_checks if check.required and check.status != "pass"]
-        return [
-            self._build_tool_call_read(
-                tool_name="build_supplier_dossier",
-                purpose="根据上传材料提炼供应商主体、服务模型、数据接触和安全画像。",
-                status="success",
-                input_summary=f"vendor={supplier_dossier.vendor_name or 'unknown'}",
-                output_summary=(
-                    f"主体={supplier_dossier.legal_entity or 'unknown'} "
-                    f"服务模型={supplier_dossier.service_model or 'unknown'} "
-                    f"数据级别={supplier_dossier.data_access_level}"
-                ),
-            ),
-            self._build_tool_call_read(
-                tool_name="check_material_gate",
-                purpose="判断上传材料是否足够像真实供应商准入材料，可以进入正式制度审查。",
-                status="success" if material_gate.decision == "pass" else "fail",
-                input_summary=f"matched_types={len(material_gate.matched_material_types)}",
-                output_summary=(
-                    f"decision={material_gate.decision} "
-                    f"relevance={material_gate.relevance_score} "
-                    f"blockers={'; '.join(material_gate.blocking_reasons[:2]) or 'none'}"
-                ),
-            ),
-            self._build_tool_call_read(
-                tool_name="check_requirement_list",
-                purpose="核对采购准入必备材料和数据相关补充材料是否齐备。",
-                status="success" if not missing_required else "warn",
-                input_summary=f"required_checks={len([check for check in requirement_checks if check.required])}",
-                output_summary=(
-                    "missing=" + (", ".join(missing_required[:4]) if missing_required else "none")
-                ),
-            ),
-        ]
-
-    def _merge_procurement_tool_trace(
-        self,
-        review: QueryResponse,
-        *,
-        material_gate: ProcurementMaterialGate,
-        requirement_checks: list[ProcurementRequirementCheck],
-        supplier_dossier: SupplierDossier,
-    ) -> QueryResponse:
-        precheck_trace = self._build_procurement_precheck_tool_trace(
-            material_gate=material_gate,
-            requirement_checks=requirement_checks,
-            supplier_dossier=supplier_dossier,
-        )
-        merged_trace = [*precheck_trace, *list(review.tool_calls or [])]
-        debug_summary = dict(review.debug_summary or {})
-        debug_summary["tool_calls"] = [item.model_dump() for item in merged_trace]
-        debug_summary["procurement_tool_trace"] = [item.model_dump() for item in merged_trace]
-        debug_summary["material_gate"] = {
-            "decision": material_gate.decision,
-            "relevance_score": material_gate.relevance_score,
-            "matched_material_types": list(material_gate.matched_material_types),
-            "blocking_reasons": list(material_gate.blocking_reasons),
-        }
-        debug_summary["requirement_checks"] = [
-            {
-                "key": check.key,
-                "label": check.label,
-                "status": check.status,
-                "required": check.required,
-                "evidence_titles": list(check.evidence_titles),
-                "detail": check.detail,
-            }
-            for check in requirement_checks
-        ]
-        debug_summary["supplier_dossier"] = {
-            "vendor_name": supplier_dossier.vendor_name,
-            "legal_entity": supplier_dossier.legal_entity,
-            "service_model": supplier_dossier.service_model,
-            "source_urls": list(supplier_dossier.source_urls),
-            "data_access_level": supplier_dossier.data_access_level,
-            "hosting_region": supplier_dossier.hosting_region,
-            "subprocessor_signal": supplier_dossier.subprocessor_signal,
-            "security_signal_summary": list(supplier_dossier.security_signal_summary),
-        }
-        review.tool_calls = merged_trace
-        review.debug_summary = debug_summary
-        return review
-
-    def _finalize_procurement_tool_trace(
-        self,
-        review: QueryResponse,
-        *,
-        assessment: StructuredReviewRead,
-    ) -> QueryResponse:
-        merged_trace = [*list(review.tool_calls or [])]
-        merged_trace.append(
-            self._build_tool_call_read(
-                tool_name="synthesize_procurement_decision",
-                purpose="根据材料预检结果、知识证据和风险信号生成采购结构化结论。",
-                status="success",
-                input_summary=f"citations={len(review.citations or [])}",
-                output_summary=f"recommendation={assessment.recommendation} legal_handoff={assessment.legal_handoff_recommendation}",
-            )
-        )
-        debug_summary = dict(review.debug_summary or {})
-        debug_summary["tool_calls"] = [item.model_dump() for item in merged_trace]
-        debug_summary["procurement_tool_trace"] = [item.model_dump() for item in merged_trace]
-        review.tool_calls = merged_trace
-        review.debug_summary = debug_summary
-        return review
-
-    def _build_legal_material_tool_trace(
-        self,
-        db: Session,
-        *,
-        project: ProcurementProject,
-        vendor: VendorCandidate,
-    ) -> list[ToolCallRead]:
-        artifacts = self.repository.list_artifacts(db, project.id)
-        our_artifact = self._artifact_for_vendor(
-            artifacts,
-            ProcurementStage.legal_review.value,
-            self.LEGAL_OUR_CONTRACT_ARTIFACT_TYPES,
-            vendor.id,
-        )
-        counterparty_artifact = self._artifact_for_vendor(
-            artifacts,
-            ProcurementStage.legal_review.value,
-            self.LEGAL_COUNTERPARTY_CONTRACT_ARTIFACT_TYPES,
-            vendor.id,
-        )
-        return [
-            self._build_tool_call_read(
-                tool_name="load_our_contract",
-                purpose="读取我方采购合同，为后续法务红线比对提供基准文本。",
-                status="success" if our_artifact and our_artifact.document_id else "fail",
-                input_summary=f"vendor={vendor.vendor_name}",
-                output_summary=self._legal_artifact_summary(db, our_artifact, fallback_title="我方采购合同"),
-            ),
-            self._build_tool_call_read(
-                tool_name="load_counterparty_contract",
-                purpose="读取对方修改后的采购合同，为后续红线比对提供对照文本。",
-                status="success" if counterparty_artifact and counterparty_artifact.document_id else "fail",
-                input_summary=f"vendor={vendor.vendor_name}",
-                output_summary=self._legal_artifact_summary(db, counterparty_artifact, fallback_title="对方修改后的采购合同"),
-            ),
-        ]
-
-    def _legal_artifact_summary(
-        self,
-        db: Session,
-        artifact: ProjectArtifact | None,
-        *,
-        fallback_title: str,
-    ) -> str:
-        if artifact is None:
-            return f"{fallback_title} 缺失"
-        if not artifact.document_id:
-            return f"{artifact.title or fallback_title} 尚未绑定文件"
-        document = db.get(Document, artifact.document_id)
-        document_title = document.title if document else artifact.title or fallback_title
-        return f"{document_title} 状态={artifact.status}"
-
-    def _merge_legal_tool_trace(
-        self,
-        db: Session,
-        *,
-        review: QueryResponse,
-        project: ProcurementProject,
-        vendor: VendorCandidate,
-        structured_review: StructuredReviewRead,
-    ) -> QueryResponse:
-        material_trace = self._build_legal_material_tool_trace(db, project=project, vendor=vendor)
-        merged_trace = [*material_trace, *list(review.tool_calls or [])]
-        merged_trace.append(
-            self._build_tool_call_read(
-                tool_name="synthesize_legal_decision",
-                purpose="结合合同证据、红线依据和差异结果生成结构化法务结论。",
-                status="success",
-                input_summary=f"citations={len(review.citations or [])}",
-                output_summary=f"recommendation={structured_review.recommendation} risk_level={structured_review.risk_level}",
-            )
-        )
-        debug_summary = dict(review.debug_summary or {})
-        debug_summary["tool_calls"] = [item.model_dump() for item in merged_trace]
-        debug_summary["legal_tool_trace"] = [item.model_dump() for item in merged_trace]
-        review.tool_calls = merged_trace
-        review.debug_summary = debug_summary
-        return review
-
     def _build_procurement_precheck_review(
         self,
         *,
@@ -3332,13 +3086,13 @@ class ProjectService:
         supplier_profile: SupplierProfileInsights | None = None,
     ):
         missing_items = [check.label for check in requirement_checks if check.required and check.status != "pass"]
-        answer_lines = [f"Supplier precheck for project {project.title} was blocked at the material gate stage."]
+        answer_lines = [f"椤圭洰 {project.title} 鐨勪緵搴斿晢棰勫宸插湪鏉愭枡闂搁棬闃舵琚樆鏂€?]
         if material_gate.blocking_reasons:
-            answer_lines.append(f"Blocking reasons: {'; '.join(material_gate.blocking_reasons[:3])}")
+            answer_lines.append(f"闃绘柇鍘熷洜锛歿'锛?.join(material_gate.blocking_reasons[:3])}")
         if missing_items:
-            answer_lines.append(f"Missing required materials: {'; '.join(missing_items[:4])}")
+            answer_lines.append(f"缂哄け鐨勫叧閿潗鏂欙細{'锛?.join(missing_items[:4])}")
         if supplier_profile and supplier_profile.missing_materials:
-            answer_lines.append(f"Model-suggested missing materials: {'; '.join(supplier_profile.missing_materials[:4])}")
+            answer_lines.append(f"妯″瀷琛ュ厖鎻愮ず缂哄け锛歿'锛?.join(supplier_profile.missing_materials[:4])}")
         debug_summary = {
             "risk_flags": [],
             "comparison_view": {"risk_flags": [], "missing_clauses": {}},
@@ -3370,22 +3124,14 @@ class ProjectService:
                 "security_signal_summary": list(supplier_dossier.security_signal_summary),
             },
         }
-        precheck_trace = self._build_procurement_precheck_tool_trace(
-            material_gate=material_gate,
-            requirement_checks=requirement_checks,
-            supplier_dossier=supplier_dossier,
-        )
-        debug_summary["tool_calls"] = [item.model_dump() for item in precheck_trace]
-        debug_summary["procurement_tool_trace"] = [item.model_dump() for item in precheck_trace]
         return QueryResponse(
             session_id="",
             answer="\n".join(answer_lines),
             citations=[],
             confidence=0.0,
-            trace_id=str(uuid.uuid4()),
+            trace_id="",
             next_action="collect_materials",
             intent="procurement_review",
-            tool_calls=precheck_trace,
             debug_summary=debug_summary,
         )
 
@@ -3405,45 +3151,44 @@ class ProjectService:
             if check.required and check.status != "pass"
         ]
         lines = [
-            "你是企业内部采购流程中的供应商准入审查助手。",
-            "请根据供应商 dossier、项目背景和内部采购/法务/合规要求，完成一轮可落地的采购审查。",
-            "不要输出泛泛而谈的建议，而要给出有依据的准入结论、风险说明和下一步动作。",
+            "浣犳槸浼佷笟鍐呴儴閲囪喘渚涘簲鍟嗗噯鍏ュ鏌ュ姪鎵嬶紝璇蜂粎渚濇嵁鍐呴儴閲囪喘鍒跺害鐭ヨ瘑搴撳洖绛旓紝骞跺紩鐢ㄥ埗搴︿緷鎹€?,
+            "璇峰厛鍒ゆ柇褰撳墠鏉愭枡鏄惁鏄庢樉涓嶉€傚悎鎺ㄨ繘閲囪喘锛屽啀璇存槑鏄惁瀛樺湪闇€瑕佸崌绾ф硶鍔℃垨瀹夊叏澶嶆牳鐨勬槑纭闄┿€?,
             "",
-            "你的任务：",
-            "1. 判断该供应商是否适合继续进入采购人工确认。",
-            "2. 明确指出法律、安全、商业或数据处理方面的具体风险。",
-            "3. 给出建议：继续推进、补充材料，还是升级到法务/安全复核。",
+            "璇峰畬鎴愪互涓嬩换鍔★細",
+            "1. 鍒ゆ柇褰撳墠渚涘簲鍟嗘槸鍚﹀彲浠ヨ繘鍏ヤ笅涓€姝ラ噰璐汉宸ョ‘璁ゃ€?,
+            "2. 寮曠敤鍒跺害璇存槑鏄惁闇€瑕佸崌绾ф硶鍔℃垨瀹夊叏澶嶆牳銆?,
+            "3. 鏄庣‘鎸囧嚭鍛戒腑鐨勯闄╃孩绾裤€佺己澶变俊鎭拰涓嬩竴姝ュ缓璁€?,
             "",
-            "项目背景：",
-            f"- 项目名称：{project.title}",
-            f"- 采购类别：{project.category}",
-            f"- 数据范围：{project.data_scope or 'none'}",
-            f"- 项目摘要：{project.summary or '未提供'}",
+            "椤圭洰鑳屾櫙锛?,
+            f"- 椤圭洰鍚嶇О锛歿project.title}",
+            f"- 閲囪喘绫诲埆锛歿project.category}",
+            f"- 鏁版嵁鑼冨洿锛歿project.data_scope or 'none'}",
+            f"- 涓氬姟鎽樿锛歿project.summary or '鏈～鍐?}",
             "",
-            "供应商 dossier：",
-            f"- 供应商名称: {dossier.vendor_name or draft.vendor_name}",
-            f"- 法律实体：{dossier.legal_entity or '未识别'}",
-            f"- 服务模型：{dossier.service_model or '未识别'}",
-            f"- 公开来源：{', '.join(dossier.source_urls) or draft.source_url or '未提供'}",
-            f"- 数据接触级别：{dossier.data_access_level}",
-            f"- 部署/存储区域：{dossier.hosting_region or '未说明'}",
-            f"- 分包信号：{dossier.subprocessor_signal}",
-            f"- 安全信号：{', '.join(dossier.security_signal_summary) or '未识别'}",
+            "渚涘簲鍟?dossier锛?,
+            f"- 渚涘簲鍟嗗悕绉帮細{dossier.vendor_name or draft.vendor_name}",
+            f"- 涓讳綋鍚嶇О锛歿dossier.legal_entity or '鏈瘑鍒?}",
+            f"- 鏈嶅姟妯″瀷锛歿dossier.service_model or '鏈瘑鍒?}",
+            f"- 鍏紑鏉ユ簮锛歿', '.join(dossier.source_urls) or draft.source_url or '鏈彁渚?}",
+            f"- 鏁版嵁鎺ヨЕ绾у埆锛歿dossier.data_access_level}",
+            f"- 鏁版嵁瀛樺偍/閮ㄧ讲鍖哄煙锛歿dossier.hosting_region or '鏈鏄?}",
+            f"- 鍒嗗寘/瀛愬鐞嗗畨鎺掞細{dossier.subprocessor_signal}",
+            f"- 瀹夊叏淇″彿锛歿', '.join(dossier.security_signal_summary) or '鏈瘑鍒?}",
             "",
-            "材料中提炼出的采购上下文：",
-            f"- 供应商摘要：{draft.profile_summary or '未提供'}",
-            f"- 采购备注：{draft.procurement_notes or '未提供'}",
+            "閲囪喘琛ュ厖淇℃伅锛?,
+            f"- 渚涘簲鍟嗙畝浠嬶細{draft.profile_summary or '鏈～鍐?}",
+            f"- 閲囪喘璇存槑锛歿draft.procurement_notes or '鏈～鍐?}",
         ]
         if supplier_profile and supplier_profile.data_involvement:
-            lines.append(f"- LLM 识别的数据参与情况：{supplier_profile.data_involvement}")
+            lines.append(f"- 妯″瀷璇嗗埆鐨勬暟鎹鐞嗕俊鍙凤細{supplier_profile.data_involvement}")
         if missing_items:
-            lines.append(f"- 预检识别出的缺失材料：{', '.join(missing_items[:6])}")
+            lines.append(f"- 棰勬宸茶瘑鍒緟琛ユ潗鏂欙細{'锛?.join(missing_items[:6])}")
         if focus_points.strip():
-            lines.extend(["", "采购额外关注点：", focus_points.strip()])
+            lines.extend(["", "閲囪喘鍏虫敞鐐癸細", focus_points.strip()])
         lines.extend(
             [
                 "",
-                "请输出一份基于证据的审查结论：要引用采购制度依据，明确阻塞原因或升级原因，并说明采购是否可以把该供应商提交给法务做合同审查。",
+                "璇疯緭鍑猴細鍒跺害渚濇嵁銆佺孩绾垮垽鏂€侀闄╃偣銆佸缓璁姩浣溿€傝嫢鍙戠幇娑夊強瀹¤鏉冦€佸畨鍏ㄤ簨浠堕€氱煡銆佹暟鎹鐞嗘潯娆俱€佽矗浠讳笂闄愩€佹暟鎹瓨鍌ㄤ綅缃€佸垎鍖呭畨鎺掔瓑闂锛岃鏄庣‘鎸囧嚭銆?,
             ]
         )
         return "\n".join(lines)
@@ -3489,18 +3234,18 @@ class ProjectService:
 
         recommendation = draft.ai_recommendation or "needs_required_materials"
         conclusion_map = {
-            "reject_irrelevant_materials": "材料与供应商准入无关或无法确认主体，当前不能进入正式审查。",
-            "needs_required_materials": "材料与供应商相关，但仍建议补充关键材料后再做完整复核。",
-            "review_with_risks": "材料基本合理，但命中了需要升级处理的风险信号，建议复核。",
-            "recommend_proceed": "材料已通过基础过滤，且未发现明显风险，可进入采购人工确认。",
+            "reject_irrelevant_materials": "鏉愭枡涓庝緵搴斿晢鍑嗗叆鏃犲叧鎴栨棤娉曠‘璁や富浣擄紝褰撳墠涓嶈兘杩涘叆姝ｅ紡瀹℃煡銆?,
+            "needs_required_materials": "鏉愭枡涓庝緵搴斿晢鐩稿叧锛屼絾浠嶅缓璁ˉ鍏呭叧閿俊鎭悗鍐嶅仛瀹屾暣澶嶆牳銆?,
+            "review_with_risks": "鏉愭枡鍩烘湰鍚堢悊锛屼絾鍛戒腑浜嗛渶瑕佸崌绾у鐞嗙殑椋庨櫓淇″彿锛屽缓璁鏍搞€?,
+            "recommend_proceed": "鏉愭枡宸查€氳繃鍩虹杩囨护锛屼笖鏈懡涓槑纭闄╋紝鍙繘鍏ラ噰璐汉宸ョ‘璁ゃ€?,
         }
-        conclusion = conclusion_map.get(recommendation, "当前材料不足以支持继续推进。")
+        conclusion = conclusion_map.get(recommendation, "褰撳墠鏉愭枡涓嶈冻浠ユ敮鎸佺户缁帹杩涖€?)
 
         check_items = [
             StructuredCheckItemRead(
-                label="Material gate",
+                label="鏉愭枡鏈夋晥鎬ч椄闂?,
                 status="pass" if material_gate.decision == "pass" else "fail",
-                detail="; ".join(material_gate.blocking_reasons[:3]) if material_gate.blocking_reasons else "Base supplier identity and capability evidence were detected.",
+                detail="锛?.join(material_gate.blocking_reasons[:3]) if material_gate.blocking_reasons else "宸茶瘑鍒埌渚涘簲鍟嗕富浣撳拰涓氬姟鑳藉姏鐨勫熀纭€璇佹嵁銆?,
             )
         ]
         for check in requirement_checks:
@@ -3513,7 +3258,7 @@ class ProjectService:
             )
         check_items.append(
             StructuredCheckItemRead(
-                label="Final recommendation",
+                label="鏈€缁堝噯鍏ュ缓璁?,
                 status="pass" if recommendation == "recommend_proceed" else "warn" if recommendation == "review_with_risks" else "fail",
                 detail=conclusion,
             )
@@ -3524,13 +3269,13 @@ class ProjectService:
             open_questions.append(reason)
         for check in requirement_checks:
             if check.required and check.status != "pass":
-                open_questions.append(f"补充材料：{check.label}")
+                open_questions.append(f"琛ュ厖鏉愭枡锛歿check.label}")
         if readable_risks:
-            open_questions.append(f"升级复核：{readable_risks[0]}")
+            open_questions.append(f"鍗囩骇澶嶆牳锛歿readable_risks[0]}")
         if focus_points.strip():
-            open_questions.append(f"结合采购关注点继核：{focus_points.strip()}")
+            open_questions.append(f"缁撳悎閲囪喘鍏虫敞鐐圭户缁鏍革細{focus_points.strip()}")
         if supplier_profile and supplier_profile.missing_materials:
-            open_questions.extend([f"模型建补充: {item}" for item in supplier_profile.missing_materials[:2]])
+            open_questions.extend([f"妯″瀷寤鸿琛ュ厖锛歿item}" for item in supplier_profile.missing_materials[:2]])
 
         summary = review.answer or conclusion
         return StructuredReviewRead(
@@ -3558,45 +3303,45 @@ class ProjectService:
         if recommendation in {"reject_irrelevant_materials", "needs_required_materials"}:
             return {
                 "recommendation": "wait_for_more_materials",
-                "reason": "当前材料尚未通过采购准入预检，必须先补充有效材料后再决定是否转法务。",
-                "next_step": "补充主体材料、产品说明和必备合规材料后重新运行审查。",
+                "reason": "褰撳墠鏉愭枡灏氭湭閫氳繃閲囪喘鍑嗗叆棰勬锛屽繀椤诲厛琛ュ厖鏈夋晥鏉愭枡鍚庡啀鍐冲畾鏄惁杞硶鍔°€?,
+                "next_step": "琛ュ厖涓讳綋鏉愭枡銆佷骇鍝佽鏄庡拰蹇呭鍚堣鏉愭枡鍚庨噸鏂拌繍琛屽鏌ャ€?,
             }
         if review.next_action != "answer":
             return {
                 "recommendation": "wait_for_more_materials",
-                "reason": "知识库未给出足够明确的制度依据，建议先补充材料再继续。",
-                "next_step": "补充证据后重新运行供应商审查。",
+                "reason": "鐭ヨ瘑搴撴湭缁欏嚭瓒冲鏄庣‘鐨勫埗搴︿緷鎹紝寤鸿鍏堣ˉ鍏呮潗鏂欏啀缁х画銆?,
+                "next_step": "琛ュ厖璇佹嵁鍚庨噸鏂拌繍琛屼緵搴斿晢瀹℃煡銆?,
             }
 
         evidence_text = "\n".join([review.answer, *(citation.snippet for citation in list(review.citations or [])[:4])]).lower()
         escalation_terms = (
             "legal review",
             "legal approval",
-            "审计权",
-            "责任上限",
-            "赔偿",
-            "数据处理",
-            "跨境",
-            "个人信息",
+            "瀹¤鏉?,
+            "璐ｄ换涓婇檺",
+            "璧斿伩",
+            "鏁版嵁澶勭悊",
+            "璺ㄥ",
+            "涓汉淇℃伅",
             "security incident",
             "incident notification",
             "subprocessor",
-            "分包",
-            "子处理",
+            "鍒嗗寘",
+            "瀛愬鐞嗚€?,
         )
         if raw_risk_flags or any(term in evidence_text for term in escalation_terms):
-            reason = "审查结果命中了安全或法务升级信号，建议采购确认后提交法务复核。"
+            reason = "瀹℃煡缁撴灉鍛戒腑浜嗗畨鍏ㄦ垨娉曞姟鍗囩骇淇″彿锛屽缓璁湪閲囪喘纭鍚庢彁浜ゆ硶鍔″鏍搞€?
             if raw_risk_flags:
-                reason = f"{reason} 首个风险点：{self._risk_summary_from_flag(raw_risk_flags[0])}"
+                reason = f"{reason} 棣栦釜椋庨櫓鐐癸細{self._risk_summary_from_flag(raw_risk_flags[0])}"
             return {
                 "recommendation": "suggest_legal_review",
                 "reason": reason,
-                "next_step": "由采购补齐相关材料后，提交法务或安全团队进一步复核。",
+                "next_step": "鐢遍噰璐ˉ榻愮浉鍏虫潗鏂欏悗锛屾彁浜ゆ硶鍔℃垨瀹夊叏鍥㈤槦杩涗竴姝ュ鏍搞€?,
             }
         return {
             "recommendation": "hold_for_procurement",
-            "reason": "系统未识别到必须立即升级法务的红线，可先由采购部门结合业务背景做最终确认。",
-            "next_step": "采购确认供应商信息无误后，再决定是否上传给法务。",
+            "reason": "绯荤粺鏈瘑鍒埌蹇呴』绔嬪嵆鍗囩骇娉曞姟鐨勭孩绾匡紝鍏堢敱閲囪喘閮ㄩ棬缁撳悎涓氬姟鑳屾櫙鍋氭渶缁堢‘璁ゃ€?,
+            "next_step": "閲囪喘纭渚涘簲鍟嗕俊鎭棤璇悗锛屽啀鍐冲畾鏄惁涓婁紶缁欐硶鍔°€?,
         }
 
     def _build_vendor_structured_review(
@@ -3607,11 +3352,11 @@ class ProjectService:
     ) -> StructuredReviewRead:
         risk_flags = self._extract_risk_flags(review)
         conclusion = (
-            "建议继续进入人工比选"
+            "寤鸿缁х画杩涘叆浜哄伐姣旈€?
             if vendor.ai_recommendation == "recommend_proceed"
-            else "建补充调查后再决定"
+            else "寤鸿琛ュ厖璋冩煡鍚庡啀鍐冲畾"
             if vendor.ai_recommendation == "needs_follow_up"
-            else "存在风险，需谨慎评估"
+            else "瀛樺湪椋庨櫓锛岄渶璋ㄦ厧璇勪及"
         )
         open_questions = self._vendor_open_questions(project, vendor, review)
         return StructuredReviewRead(
@@ -3621,19 +3366,19 @@ class ProjectService:
             summary=review.answer,
             check_items=[
                 StructuredCheckItemRead(
-                    label="Supplier baseline information",
+                    label="渚涘簲鍟嗗熀纭€璧勬枡",
                     status="pass" if vendor.profile_summary or vendor.source_url else "warn",
-                    detail="Source information or supplier summary is available." if vendor.profile_summary or vendor.source_url else "Please add a public source link or supplier summary.",
+                    detail="宸插綍鍏ユ潵婧愬钩鍙般€佺畝浠嬫垨澶栭儴閾炬帴銆? if vendor.profile_summary or vendor.source_url else "寤鸿琛ュ厖渚涘簲鍟嗗叕寮€淇℃伅涓庝富椤甸摼鎺ャ€?,
                 ),
                 StructuredCheckItemRead(
-                    label="Onboarding recommendation",
+                    label="鍑嗗叆寤鸿",
                     status="pass" if vendor.ai_recommendation == "recommend_proceed" else "warn" if vendor.ai_recommendation == "needs_follow_up" else "fail",
                     detail=conclusion,
                 ),
                 StructuredCheckItemRead(
-                    label="Data and compliance risks",
+                    label="鏁版嵁涓庡悎瑙勯闄?,
                     status="fail" if risk_flags else "pass",
-                    detail="; ".join(risk_flags[:3]) if risk_flags else "No structured data or compliance risk flags were detected.",
+                    detail="锛?.join(risk_flags[:3]) if risk_flags else "褰撳墠鏈彂鐜版槑纭殑缁撴瀯鍖栭闄╂爣璁般€?,
                 ),
             ],
             risk_flags=risk_flags,
@@ -3650,51 +3395,31 @@ class ProjectService:
         risk_flags = self._extract_risk_flags(review)
         comparison_view = review.debug_summary.get("comparison_view", {}) if isinstance(review.debug_summary, dict) else {}
         missing_clauses = comparison_view.get("missing_clauses", {}) if isinstance(comparison_view, dict) else {}
-        clause_details: list[str] = []
+        clause_details = []
         for doc_title, clauses in list(missing_clauses.items())[:2]:
             if clauses:
-                clause_details.append(f"{doc_title} 缺失或弱化 {', '.join(clauses[:4])}")
-        recommendation = "review_with_risks" if (risk_flags or clause_details) else "recommend_proceed"
-        if not review.citations and recommendation == "recommend_proceed":
-            recommendation = "needs_follow_up"
-        if risk_flags or clause_details:
-            risk_level = "high"
-        elif not review.citations or review.next_action != "answer":
-            risk_level = "medium"
-        else:
-            risk_level = "low"
-        decision_suggestion = "return" if recommendation != "recommend_proceed" else "approve"
-        blocking_issues = list(clause_details)
-        if not review.citations:
-            blocking_issues.append("当前缺少足够条款引用，建议法务谨慎复核。")
-        if review.next_action != "answer":
-            blocking_issues.append("模型未形成完全确定结论，建议结合人工判断。")
-        summary = review.answer or ("发现合同红线风险，建议退回采购处理。" if decision_suggestion == "return" else "两份合同已完成初步红线审查。")
+                clause_details.append(f"{doc_title} 缂哄皯 {', '.join(clauses[:4])}")
+        recommendation = self._derive_ai_recommendation(review.next_action, review.debug_summary)
         return StructuredReviewRead(
             review_kind="legal_contract_review",
-            conclusion="发现合同红线风险，建议退回采购处理" if decision_suggestion == "return" else "合同可进入人工法务决策",
+            conclusion="寤鸿閫€鍥為噰璐噸鏂扮瓫閫変緵搴斿晢" if risk_flags else "鍚堝悓鍙繘鍏ヤ汉宸ユ硶鍔″喅绛?,
             recommendation=recommendation,
-            summary=summary,
-            risk_level=risk_level,
-            decision_suggestion=decision_suggestion,
-            clause_gaps=clause_details,
-            blocking_issues=blocking_issues[:6],
-            next_step="法务确认结论后，可直接通过或退回采购。" if decision_suggestion == "approve" else "建议退回采购修订条款或重新处理供应商合同。",
+            summary=review.answer,
             check_items=[
                 StructuredCheckItemRead(
-                    label="合同材料齐备",
+                    label="鍚堝悓寰€杩旀潗鏂?,
                     status="pass",
-                    detail=f"已将 {vendor.vendor_name} 的我方采购合同与对方修改版合同纳入审查。",
+                    detail=f"宸插 {vendor.vendor_name} 鐨勬垜鏂规ā鏉夸笌瀵规柟鍥炰紶鍚堝悓杩涜瀹℃煡銆?,
                 ),
                 StructuredCheckItemRead(
-                    label="红线条款差异",
+                    label="绾㈢嚎鏉℃宸紓",
                     status="fail" if clause_details else "pass",
-                    detail="；".join(clause_details[:2]) if clause_details else "未识别到明确的红线条款缺失或弱化。",
+                    detail="锛?.join(clause_details[:2]) if clause_details else "褰撳墠缁撴瀯鍖栧姣旀湭鍙戠幇鏄庣‘缂哄け鏉℃銆?,
                 ),
                 StructuredCheckItemRead(
-                    label="法务建议动作",
-                    status="fail" if decision_suggestion == "return" else "warn" if recommendation == "needs_follow_up" else "pass",
-                    detail="建议退回采购处理当前合同风险。" if decision_suggestion == "return" else "可进入法务人工通过判断。",
+                    label="娉曞姟寤鸿鍔ㄤ綔",
+                    status="fail" if recommendation != "recommend_proceed" else "pass",
+                    detail="瀛樺湪椋庨櫓锛屽缓璁€€鍥為噰璐垨浜哄伐澶嶆牳銆? if recommendation != "recommend_proceed" else "鍙繘鍏ヤ汉宸ユ硶鍔￠€氳繃/閫€鍥炲喅绛栥€?,
                 ),
             ],
             risk_flags=risk_flags,
@@ -3725,23 +3450,23 @@ class ProjectService:
     def _vendor_open_questions(self, project: ProcurementProject, vendor: VendorCandidate, review) -> list[str]:
         questions: list[str] = []
         if not vendor.source_url:
-            questions.append("补充供应商官网或第三方平台链接。")
+            questions.append("琛ュ厖渚涘簲鍟嗗畼缃戞垨绗笁鏂瑰钩鍙伴摼鎺ャ€?)
         if not vendor.profile_summary:
-            questions.append("补充供应商业务能力与准入资料摘要。")
+            questions.append("琛ュ厖渚涘簲鍟嗕笟鍔¤兘鍔涗笌鍑嗗叆璧勬枡鎽樿銆?)
         if project.data_scope != "none":
-            questions.append("补充供应商数据处理、存储与安全事件响应说明。")
+            questions.append("纭渚涘簲鍟嗗鏁版嵁澶勭悊銆佸瓨鍌ㄤ笌瀹夊叏浜嬩欢鍝嶅簲鐨勮鏄庛€?)
         if review.next_action != "answer":
-            questions.append("当前证据不足，建议继续收集公开信息或准入材料。")
+            questions.append("褰撳墠璇佹嵁涓嶈冻锛屽缓璁户缁敹闆嗗叕寮€淇℃伅鎴栧噯鍏ユ潗鏂欍€?)
         return questions[:4]
 
     def _legal_open_questions(self, review, clause_details: list[str]) -> list[str]:
         questions: list[str] = []
         if clause_details:
-            questions.append("逐条确认缺失或弱化条款是否可接受。")
+            questions.append("閫愭潯纭缂哄け鎴栧急鍖栨潯娆炬槸鍚﹀彲鎺ュ彈銆?)
         if review.next_action != "answer":
-            questions.append("补充标准模板或对方回传合同中的缺失证据。")
+            questions.append("琛ュ厖鏍囧噯妯℃澘鎴栧鏂瑰洖浼犲悎鍚屼腑鐨勭己澶辫瘉鎹€?)
         if not review.citations:
-            questions.append("当前缺少足够条款证据，建议重新上传合同材料。")
+            questions.append("褰撳墠缂哄皯瓒冲鏉℃璇佹嵁锛屽缓璁噸鏂颁笂浼犲悎鍚屾潗鏂欍€?)
         return questions[:4]
 
     def _structured_review_from_json(self, raw_json: str) -> StructuredReviewRead | None:
@@ -3760,72 +3485,6 @@ class ProjectService:
             if decision.decision_type == "legal_ai_review":
                 return self._structured_review_from_json(decision.structured_summary_json)
         return None
-
-    def _artifact_for_vendor(
-        self,
-        artifacts: list[ProjectArtifact],
-        stage: str,
-        artifact_type: str | tuple[str, ...],
-        linked_vendor_id: str,
-    ) -> ProjectArtifact | None:
-        artifact_types = {artifact_type} if isinstance(artifact_type, str) else set(artifact_type)
-        fallback: ProjectArtifact | None = None
-        for artifact in artifacts:
-            if artifact.stage != stage or artifact.artifact_type not in artifact_types:
-                continue
-            if linked_vendor_id and artifact.linked_vendor_id not in {"", linked_vendor_id}:
-                continue
-            if artifact.status in {"provided", "approved"}:
-                return artifact
-            if fallback is None:
-                fallback = artifact
-        return fallback
-
-    def _build_legal_handoff(
-        self,
-        project: ProcurementProject,
-        vendors: list[VendorCandidate],
-        artifacts: list[ProjectArtifact],
-    ) -> LegalHandoffRead | None:
-        if not project.selected_vendor_id:
-            return None
-        vendor = next((item for item in vendors if item.id == project.selected_vendor_id), None)
-        if vendor is None:
-            return None
-        dispatch_artifact = self._artifact_for_vendor(
-            artifacts,
-            ProcurementStage.legal_review.value,
-            self.LEGAL_OUR_CONTRACT_ARTIFACT_TYPES,
-            vendor.id,
-        )
-        redline_artifact = self._artifact_for_vendor(
-            artifacts,
-            ProcurementStage.legal_review.value,
-            self.LEGAL_COUNTERPARTY_CONTRACT_ARTIFACT_TYPES,
-            vendor.id,
-        )
-        return LegalHandoffRead(
-            vendor_id=vendor.id,
-            vendor_name=vendor.vendor_name,
-            contact_name=vendor.contact_name,
-            contact_email=vendor.contact_email,
-            contact_phone=vendor.contact_phone,
-            source_url=vendor.source_url,
-            our_contract_status=dispatch_artifact.status if dispatch_artifact else "missing",
-            our_contract_notes=dispatch_artifact.notes if dispatch_artifact else "",
-            counterparty_contract_status=redline_artifact.status if redline_artifact else "missing",
-            counterparty_contract_notes=redline_artifact.notes if redline_artifact else "",
-            standard_contract_status=dispatch_artifact.status if dispatch_artifact else "missing",
-            standard_contract_notes=dispatch_artifact.notes if dispatch_artifact else "",
-            vendor_redline_status=redline_artifact.status if redline_artifact else "missing",
-            vendor_redline_notes=redline_artifact.notes if redline_artifact else "",
-            ready_for_legal_review=bool(
-                dispatch_artifact
-                and redline_artifact
-                and dispatch_artifact.status in {"provided", "approved"}
-                and redline_artifact.status in {"provided", "approved"}
-            ),
-        )
 
     def _serialize_summary(self, db: Session, project: ProcurementProject) -> ProjectSummaryRead:
         return ProjectSummaryRead(
@@ -3875,7 +3534,6 @@ class ProjectService:
             },
             ProcurementStage.final_approval.value: {
                 "manager": ["final_approve", "final_return_legal", "final_return_procurement", "cancel"],
-                "admin": ["sign", "cancel"],
             },
             ProcurementStage.signing.value: {
                 "admin": ["sign", "cancel"],
@@ -3888,9 +3546,7 @@ class ProjectService:
 
     def _redact_detail_for_user(self, detail: ProjectDetailRead, current_user: UserProfileRead) -> ProjectDetailRead:
         if current_user.role == "admin":
-            payload = detail.model_dump()
-            payload["allowed_actions"] = self._allowed_actions(detail, current_user.role)
-            return ProjectDetailRead(**payload)
+            return detail
 
         payload = detail.model_dump()
         payload["allowed_actions"] = self._allowed_actions(detail, current_user.role)
@@ -3900,7 +3556,6 @@ class ProjectService:
             payload["vendors"] = []
             payload["artifacts"] = [artifact for artifact in payload["artifacts"] if artifact["stage"] in {"business_draft", "manager_review"}]
             payload["risks"] = []
-            payload["legal_handoff"] = None
             payload["decisions"] = [
                 decision
                 for decision in payload["decisions"]
@@ -3916,15 +3571,8 @@ class ProjectService:
             payload["artifacts"] = [
                 artifact
                 for artifact in payload["artifacts"]
-                if artifact["artifact_type"]
-                not in {
-                    "standard_contract_dispatch",
-                    "vendor_redline_contract",
-                    "our_procurement_contract",
-                    "counterparty_redline_contract",
-                }
+                if artifact["artifact_type"] not in {"standard_contract_dispatch", "vendor_redline_contract"}
             ]
-            payload["legal_handoff"] = None
         elif current_user.role == "legal":
             payload["vendors"] = [
                 vendor
@@ -3965,7 +3613,6 @@ class ProjectService:
     ) -> ProjectDetailRead:
         latest_legal_review = self._latest_legal_review(decisions)
         procurement_material_session = self._procurement_material_session_from_json(project.procurement_materials_json)
-        legal_handoff = self._build_legal_handoff(project, vendors, artifacts)
         return ProjectDetailRead(
             id=project.id,
             title=project.title,
@@ -3992,7 +3639,6 @@ class ProjectService:
             application_checks=self._build_application_checks(project),
             procurement_material_session=procurement_material_session,
             latest_legal_review=latest_legal_review,
-            legal_handoff=legal_handoff,
             blocker_summary=blockers,
             tasks=[ProjectTaskRead.model_validate(task) for task in tasks],
             vendors=[self._serialize_vendor(vendor) for vendor in vendors],
@@ -4014,4 +3660,3 @@ class ProjectService:
         payload = ProjectDecisionRead.model_validate(decision).model_dump()
         payload["structured_summary"] = self._structured_review_from_json(decision.structured_summary_json)
         return ProjectDecisionRead(**payload)
-
