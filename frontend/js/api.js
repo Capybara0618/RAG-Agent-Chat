@@ -61,6 +61,15 @@ export function apiPatch(path, body) {
   });
 }
 
+export function openEventStream(path) {
+  const url = new URL(`${API_BASE_URL}${path}`);
+  const token = getAuthToken();
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+  return new EventSource(url.toString());
+}
+
 export function loadStoredTaskIds() {
   return JSON.parse(localStorage.getItem("procureops-task-ids") || "[]");
 }

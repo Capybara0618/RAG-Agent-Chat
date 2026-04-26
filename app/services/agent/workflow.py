@@ -48,6 +48,13 @@ except ImportError:
             return _CompiledGraph(self.entry_point, self.nodes, self.edges)
 
 
+TASK_TOOL_DEFAULTS = {
+    "knowledge_qa": ["knowledge_search"],
+    "procurement_fit_review": ["retrieve_procurement_knowledge"],
+    "legal_contract_review": ["retrieve_legal_redlines", "compare_legal_clauses"],
+}
+
+
 class KnowledgeGraphBuilder:
     def __init__(self, *, llm_client: LLMClient, retrieval_service: RetrievalService) -> None:
         self.llm_client = llm_client
@@ -56,13 +63,11 @@ class KnowledgeGraphBuilder:
 
     def build(self, db: Session):
         graph = StateGraph(AgentState)
-        graph.add_node("intent_router", self._wrap("意图路由", lambda state: self.intent_router(state)))
-        graph.add_node("tool_selector", self._wrap("工具选择", lambda state: self.tool_selector(state)))
-        graph.add_node("tool_executor", self._wrap("检索执行", lambda state: self.tool_executor(state, db)))
+        graph.add_node("tool_selector", self._wrap("任务模式选择", lambda state: self.tool_selector(state)))
+        graph.add_node("tool_executor", self._wrap("工具执行", lambda state: self.tool_executor(state, db)))
         graph.add_node("answer_composer", self._wrap("答案生成", lambda state: self.answer_composer(state)))
         graph.add_node("citation_verifier", self._wrap("引用校验", lambda state: self.citation_verifier(state)))
-        graph.set_entry_point("intent_router")
-        graph.add_edge("intent_router", "tool_selector")
+        graph.set_entry_point("tool_selector")
         graph.add_edge("tool_selector", "tool_executor")
         graph.add_edge("tool_executor", "answer_composer")
         graph.add_edge("answer_composer", "citation_verifier")
@@ -96,20 +101,15 @@ class KnowledgeGraphBuilder:
 
         return runner
 
-    def intent_router(self, state: AgentState) -> AgentState:
-        intent, confidence = self.llm_client.classify_intent(state["query"])
-        state["intent"] = intent
-        state["intent_confidence"] = confidence
-        return state
-
     def tool_selector(self, state: AgentState) -> AgentState:
-        retrieval_plan = self.llm_client.build_retrieval_plan(state["query"], state["intent"], state["top_k"])
+        task_mode = state.get("task_mode", "knowledge_qa")
+        retrieval_plan = self.llm_client.build_retrieval_plan(state["query"], task_mode, state["top_k"])
         requested_tools = [tool_name for tool_name in list(state.get("requested_tools", [])) if tool_name]
         if requested_tools:
             tool_sequence = requested_tools
         else:
-            tool_sequence = ["knowledge_search"]
-            if retrieval_plan.get("allow_multi_doc"):
+            tool_sequence = list(TASK_TOOL_DEFAULTS.get(task_mode, ["knowledge_search"]))
+            if retrieval_plan.get("allow_multi_doc") and "evidence_compare" not in tool_sequence and task_mode == "knowledge_qa":
                 tool_sequence.append("evidence_compare")
         state["retrieval_plan"] = retrieval_plan
         state["tool_sequence"] = tool_sequence
@@ -127,7 +127,7 @@ class KnowledgeGraphBuilder:
                         tool_name=tool_name,
                         purpose="未注册工具",
                         status="error",
-                        input_summary=f"意图={state.get('intent', '')}",
+                        input_summary=f"task_mode={state.get('task_mode', '')}",
                         output_summary="未找到对应工具定义。",
                     )
                 )
@@ -150,25 +150,10 @@ class KnowledgeGraphBuilder:
         state["tool_calls"] = tool_calls
         return state
 
-    def search_knowledge(self, db: Session, state: AgentState):
-        return self.retrieval_service.retrieve(
-            db,
-            query=state["query"],
-            user_role=state["user_role"],
-            top_k=int(state["retrieval_plan"]["top_k"]),
-            plan=state["retrieval_plan"],
-        )
-
-    def fetch_document_sections(self, db: Session, *, document_ids: list[str]):
-        return self.retrieval_service.fetch_document_sections(db, document_ids)
-
-    def compare_evidence(self, chunks):
-        return self.retrieval_service.compare_evidence(chunks)
-
     def answer_composer(self, state: AgentState) -> AgentState:
         answer, confidence, next_action = self.llm_client.compose_answer(
             query=state["query"],
-            intent=state["intent"],
+            task_mode=state.get("task_mode", "knowledge_qa"),
             citations=list(state.get("citations", [])),
             retrieved_chunks=list(state.get("retrieved_chunks", [])),
             comparison_view=state.get("comparison_view"),
@@ -191,8 +176,8 @@ class KnowledgeGraphBuilder:
         state["verification_debug"] = verification_debug
         state["final_answer"] = answer
         state["debug_summary"] = {
-            "intent": state.get("intent", "qa"),
-            "intent_confidence": state.get("intent_confidence", 0.0),
+            "task_mode": state.get("task_mode", "knowledge_qa"),
+            "intent": state.get("task_mode", "knowledge_qa"),
             "tool_sequence": list(state.get("tool_sequence", [])),
             "tool_calls": [tool_call.model_dump() for tool_call in list(state.get("tool_calls", []))],
             "retrieval_plan": state.get("retrieval_plan", {}),
@@ -204,20 +189,22 @@ class KnowledgeGraphBuilder:
 
     @staticmethod
     def _summarize_input(node_name: str, state: AgentState) -> str:
-        if node_name == "意图路由":
-            return state["query"][:160]
-        if node_name == "检索执行":
+        if node_name == "工具执行":
             plan = state.get("retrieval_plan", {})
-            return f"召回数量={plan.get('top_k')} 角色={state.get('user_role')}"
-        return f"意图={state.get('intent', '')} 问题={state['query'][:80]}"
+            return f"task_mode={state.get('task_mode')} top_k={plan.get('top_k')} role={state.get('user_role')}"
+        return f"task_mode={state.get('task_mode')} query={state['query'][:80]}"
 
     @staticmethod
     def _summarize_output(node_name: str, state: AgentState) -> str:
-        if node_name == "意图路由":
-            return f"意图={state.get('intent', '')} 置信度={state.get('intent_confidence', 0.0)}"
-        if node_name == "工具选择":
-            return json.dumps({"tool_sequence": list(state.get("tool_sequence", []))}, ensure_ascii=False)
-        if node_name == "检索执行":
+        if node_name == "任务模式选择":
+            return json.dumps(
+                {
+                    "task_mode": state.get("task_mode"),
+                    "tool_sequence": list(state.get("tool_sequence", [])),
+                },
+                ensure_ascii=False,
+            )
+        if node_name == "工具执行":
             retrieval_debug = state.get("retrieval_debug", {})
             return json.dumps(
                 {
@@ -228,7 +215,7 @@ class KnowledgeGraphBuilder:
                 ensure_ascii=False,
             )
         if node_name == "答案生成":
-            return f"系统动作={state.get('next_action', '')} 置信度={state.get('confidence', 0.0)}"
+            return f"next_action={state.get('next_action', '')} confidence={state.get('confidence', 0.0)}"
         return json.dumps(state.get("verification_debug", {}), ensure_ascii=False)
 
     @staticmethod

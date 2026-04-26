@@ -3,6 +3,7 @@
 import json
 import uuid
 from datetime import datetime
+from time import perf_counter
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -29,6 +30,7 @@ class KnowledgeOpsAgentService:
         self.llm_client = llm_client
 
     def query(self, db: Session, request: QueryRequest, *, current_user: UserProfileRead) -> QueryResponse:
+        started = perf_counter()
         session = self.chat_repository.get_or_create_session(db, request.session_id, request.query, current_user.id)
         history_messages = self.chat_repository.list_messages(db, session.id)
         trace_id = str(uuid.uuid4())
@@ -49,6 +51,7 @@ class KnowledgeOpsAgentService:
                 "session_id": session.id,
                 "user_role": current_user.role,
                 "top_k": request.top_k,
+                "task_mode": request.task_mode,
                 "requested_tools": list(request.tool_sequence or []),
                 "history": [{"role": msg.role, "content": msg.content} for msg in history_messages[-6:]],
                 "trace_id": trace_id,
@@ -59,11 +62,16 @@ class KnowledgeOpsAgentService:
         citations = [citation.model_dump() for citation in state.get("citations", [])]
         final_answer = str(state.get("final_answer", state.get("draft_answer", "")))
         debug_summary = dict(state.get("debug_summary", {}))
+        performance = dict(debug_summary.get("performance", {}))
+        performance["agent_total_ms"] = round((perf_counter() - started) * 1000, 2)
+        performance["retrieval_cache"] = self.retrieval_service.cache_stats()
+        performance["embedding_cache"] = self.retrieval_service.embedding_service.cache_stats()
+        debug_summary["performance"] = performance
         self.chat_repository.add_trace_steps(db, trace_id, list(state.get("trace_steps", [])))
         self.chat_repository.finalize_trace(
             db,
             trace_id=trace_id,
-            intent=str(state.get("intent", "qa")),
+            intent=str(state.get("task_mode", request.task_mode)),
             next_action=str(state.get("next_action", "answer")),
             confidence=float(state.get("confidence", 0.0)),
             final_answer=final_answer,
@@ -86,7 +94,8 @@ class KnowledgeOpsAgentService:
             confidence=float(state.get("confidence", 0.0)),
             trace_id=trace_id,
             next_action=str(state.get("next_action", "answer")),
-            intent=str(state.get("intent", "qa")),
+            intent=str(state.get("task_mode", request.task_mode)),
+            task_mode=str(state.get("task_mode", request.task_mode)),
             tool_calls=list(state.get("tool_calls", [])),
             debug_summary=debug_summary,
         )
@@ -135,6 +144,7 @@ class KnowledgeOpsAgentService:
             session_id=trace.session_id,
             query=trace.query,
             intent=trace.intent,
+            task_mode=trace.intent,
             next_action=trace.next_action,
             confidence=trace.confidence,
             final_answer=trace.final_answer,
@@ -162,6 +172,7 @@ class KnowledgeOpsAgentService:
                 query=trace.query,
                 user_role=trace.user_role,
                 intent=trace.intent,
+                task_mode=trace.intent,
                 next_action=trace.next_action,
                 confidence=trace.confidence,
                 created_at=trace.created_at,

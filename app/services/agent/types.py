@@ -11,11 +11,10 @@ class AgentState(TypedDict):
     session_id: str
     user_role: str
     top_k: int
+    task_mode: str
     history: list[dict[str, str]]
     trace_id: str
     requested_tools: list[str]
-    intent: NotRequired[str]
-    intent_confidence: NotRequired[float]
     retrieval_plan: NotRequired[dict[str, object]]
     tool_sequence: NotRequired[list[str]]
     tool_calls: NotRequired[list[ToolCallRead]]

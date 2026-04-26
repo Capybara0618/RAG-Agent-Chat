@@ -1,0 +1,68 @@
+{
+  "benchmark_version": "procurement_retrieval_hard_v1",
+  "case_count": 100,
+  "docs": [
+    "采购核心-供应商准入办法.md",
+    "采购核心-供应商背景核验清单.md",
+    "采购核心-外包与服务类供应商筛选要点.md",
+    "采购核心-安全评审操作流程.md",
+    "采购核心-小额SaaS快速引入指引.md",
+    "采购核心-常见问答.csv",
+    "采购核心-第三方数据处理补充说明.md",
+    "采购核心-系统接入类采购补充要求.md",
+    "采购核心-试用转正式采购规则.md",
+    "采购核心-采购升级判断案例集.md",
+    "采购核心-采购审批矩阵.md",
+    "采购核心-预算例外处理说明.md"
+  ],
+  "doc_count": 12,
+  "embedding_backend": "sentence_transformer",
+  "embedding_dimension": 768,
+  "pipelines": {
+    "bm25_only": {
+      "hit@1": 0.91,
+      "hit@5": 1.0,
+      "mrr": 0.948,
+      "embedding_backend": "sentence_transformer",
+      "embedding_dimension": 768,
+      "failures": [],
+      "elapsed_seconds": 24.44
+    },
+    "semantic_only": {
+      "hit@1": 0.58,
+      "hit@5": 0.99,
+      "mrr": 0.73,
+      "embedding_backend": "sentence_transformer",
+      "embedding_dimension": 768,
+      "failures": [
+        {
+          "case_id": "budget_04",
+          "scenario_type": "analysis_budget_attention",
+          "acceptable_titles": [
+            "采购核心-预算例外处理说明.md",
+            "采购核心-采购审批矩阵.md"
+          ],
+          "returned_titles": [
+            "采购核心-供应商背景核验清单.md",
+            "采购核心-采购升级判断案例集.md",
+            "采购核心-供应商准入办法.md",
+            "采购核心-安全评审操作流程.md",
+            "采购核心-外包与服务类供应商筛选要点.md"
+          ],
+          "query": "采购需求：市场运营部引入市场运营部活动报名与线索收集平台采购项目，市场运营部计划引入活动报名与线索收集平台，重点覆盖报名表单、线索分层和活动数据回收，需要采购判断候选供应商是否值得继续推进。\n供应商描述：供应商介绍更偏通用低代码表单、任务流和审批编排，没有说明和本次专业场景的一一对应能力。\n采购备注：业务认可供应商演示效果，但报价已经超过预算，需要采购提示预算例外或重新议价风险。\n风险线索：费用超过原预算，需要确认审批层级\n关注点：重点关注预算匹配、是否需要走预算例外，以及能力描述是否真的贴合本次采购。"
+        }
+      ],
+      "elapsed_seconds": 20.24
+    },
+    "hybrid_rrf": {
+      "hit@1": 0.91,
+      "hit@5": 1.0,
+      "mrr": 0.948,
+      "embedding_backend": "sentence_transformer",
+      "embedding_dimension": 768,
+      "failures": [],
+      "elapsed_seconds": 20.33
+    }
+  },
+  "elapsed_seconds": 70.52
+}

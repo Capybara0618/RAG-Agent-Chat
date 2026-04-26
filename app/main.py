@@ -25,6 +25,7 @@ from app.repositories.project_repository import ProjectRepository
 from app.services.agent.llm import LLMClient
 from app.services.agent.service import KnowledgeOpsAgentService
 from app.services.auth_service import AuthService
+from app.services.cache_backend import RedisJsonCacheBackend
 from app.services.evaluation.service import EvaluationService
 from app.services.ingestion.connectors import DocumentParser
 from app.services.ingestion.service import IngestionService
@@ -35,9 +36,23 @@ from app.services.retrieval.service import RetrievalService
 
 def create_container(settings: Settings) -> AppContainer:
     session_factory = create_session_factory(settings)
-    embedding_service = EmbeddingService()
+    embedding_service = EmbeddingService(
+        model_name=settings.embedding_model,
+        device=settings.embedding_device,
+    )
     document_repository = DocumentRepository()
-    retrieval_service = RetrievalService(document_repository, embedding_service)
+    retrieval_service = RetrievalService(
+        document_repository,
+        embedding_service,
+        cache_backend=RedisJsonCacheBackend(
+            redis_url=settings.redis_url,
+            key_prefix=settings.redis_key_prefix,
+        ),
+        cache_ttl_seconds=float(settings.retrieval_cache_ttl_seconds),
+        reranker_model=settings.reranker_model,
+        reranker_device=settings.reranker_device,
+        reranker_enabled=settings.reranker_enabled,
+    )
     ingestion_service = IngestionService(
         settings=settings,
         repository=document_repository,

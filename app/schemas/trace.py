@@ -12,6 +12,7 @@ class TraceRead(BaseModel):
     session_id: str
     query: str
     intent: str
+    task_mode: str | None = None
     next_action: str
     confidence: float
     final_answer: str
@@ -26,6 +27,7 @@ class TraceSearchResult(BaseModel):
     query: str
     user_role: str
     intent: str
+    task_mode: str | None = None
     next_action: str
     confidence: float
     created_at: datetime

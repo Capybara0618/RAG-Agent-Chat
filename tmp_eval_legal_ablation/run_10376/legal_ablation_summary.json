@@ -1,0 +1,54 @@
+{
+  "case_count": 50,
+  "base_case_count": 10,
+  "kb_doc_count": 6,
+  "embedding_backend": "sentence_transformer",
+  "embedding_dimension": 768,
+  "result_file": "D:\\Code\\RAG+Agent项目\\tmp_eval_legal_ablation\\run_10376\\legal_ablation_result.json",
+  "pipelines": {
+    "bm25_only": {
+      "success": 0.56,
+      "decision_accuracy": 0.9,
+      "risk_accuracy": 0.9,
+      "clause_recall": 0.8667,
+      "doc_hit@1": 0.54,
+      "doc_hit@3": 0.56,
+      "doc_mrr": 0.55,
+      "cross_encoder_active": false,
+      "elapsed_seconds": 58.18
+    },
+    "semantic_only": {
+      "success": 0.48,
+      "decision_accuracy": 0.86,
+      "risk_accuracy": 0.86,
+      "clause_recall": 0.8667,
+      "doc_hit@1": 0.46,
+      "doc_hit@3": 0.48,
+      "doc_mrr": 0.47,
+      "cross_encoder_active": false,
+      "elapsed_seconds": 35.47
+    },
+    "hybrid_rrf": {
+      "success": 0.5,
+      "decision_accuracy": 0.9,
+      "risk_accuracy": 0.9,
+      "clause_recall": 0.8667,
+      "doc_hit@1": 0.46,
+      "doc_hit@3": 0.5,
+      "doc_mrr": 0.48,
+      "cross_encoder_active": false,
+      "elapsed_seconds": 35.07
+    },
+    "hybrid_rrf_rerank": {
+      "success": 0.96,
+      "decision_accuracy": 0.96,
+      "risk_accuracy": 0.96,
+      "clause_recall": 0.8667,
+      "doc_hit@1": 0.62,
+      "doc_hit@3": 1.0,
+      "doc_mrr": 0.7933,
+      "cross_encoder_active": true,
+      "elapsed_seconds": 111.88
+    }
+  }
+}

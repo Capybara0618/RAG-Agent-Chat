@@ -46,7 +46,7 @@ from app.services.project_service import ProjectService
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
-LEGAL_CONTRACT_UPLOAD_SUFFIXES = {".md", ".markdown", ".docx"}
+LEGAL_CONTRACT_UPLOAD_SUFFIXES = {".md", ".markdown", ".docx", ".pdf"}
 
 
 @router.get("", response_model=list[ProjectSummaryRead])
@@ -255,7 +255,7 @@ async def upload_project_artifact(
         original_name = Path(file.filename or "contract.bin").name
         suffix = Path(original_name).suffix.lower()
         if suffix not in LEGAL_CONTRACT_UPLOAD_SUFFIXES:
-            raise ValueError("Legal contract upload currently supports only .md and .docx files.")
+            raise ValueError("Legal contract upload currently supports only .md, .docx and .pdf files.")
         file_bytes = await file.read()
         if not file_bytes:
             raise ValueError("Uploaded file is empty.")

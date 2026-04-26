@@ -122,6 +122,9 @@ class VendorCandidateCreate(BaseModel):
     contact_phone: str = ""
     profile_summary: str = ""
     procurement_notes: str = ""
+    handles_company_data: bool = False
+    requires_system_integration: bool = False
+    quoted_amount: float = 0.0
 
 
 class VendorReviewRequest(BaseModel):
@@ -139,6 +142,9 @@ class ProcurementAgentReviewRequest(BaseModel):
     contact_phone: str = ""
     profile_summary: str = ""
     procurement_notes: str = ""
+    handles_company_data: bool = False
+    requires_system_integration: bool = False
+    quoted_amount: float = 0.0
     supplier_profile: SupplierProfileRead | None = None
     focus_points: str = ""
     user_role: str = "procurement"
@@ -277,6 +283,11 @@ class StructuredReviewRead(BaseModel):
     conclusion: str
     recommendation: str
     summary: str
+    analysis_tags: list[str] = Field(default_factory=list)
+    fit_decision: str = ""
+    fit_reason: str = ""
+    missing_materials: list[str] = Field(default_factory=list)
+    escalation: str = ""
     risk_level: str = "medium"
     decision_suggestion: str = ""
     next_step: str = ""
@@ -303,6 +314,9 @@ class VendorCandidateRead(BaseModel):
     contact_phone: str
     profile_summary: str
     procurement_notes: str
+    handles_company_data: bool = False
+    requires_system_integration: bool = False
+    quoted_amount: float = 0.0
     ai_review_summary: str
     structured_review: StructuredReviewRead | None = None
     ai_recommendation: str

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import Citation, ToolCallRead
+
+TaskMode = Literal["knowledge_qa", "procurement_fit_review", "legal_contract_review"]
 
 
 class QueryRequest(BaseModel):
@@ -12,6 +15,7 @@ class QueryRequest(BaseModel):
     session_id: str | None = None
     user_role: str = "manager"
     top_k: int = Field(default=5, ge=1, le=10)
+    task_mode: TaskMode = "knowledge_qa"
     tool_sequence: list[str] = Field(default_factory=list)
 
 
@@ -23,6 +27,7 @@ class QueryResponse(BaseModel):
     trace_id: str
     next_action: str
     intent: str
+    task_mode: TaskMode = "knowledge_qa"
     tool_calls: list[ToolCallRead] = Field(default_factory=list)
     debug_summary: dict[str, object] = Field(default_factory=dict)
 

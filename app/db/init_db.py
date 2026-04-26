@@ -39,6 +39,9 @@ RUNTIME_COLUMN_PATCHES: dict[str, dict[str, str]] = {
         "contact_name": "VARCHAR(120) DEFAULT ''",
         "contact_email": "VARCHAR(255) DEFAULT ''",
         "contact_phone": "VARCHAR(80) DEFAULT ''",
+        "handles_company_data": "BOOLEAN DEFAULT FALSE",
+        "requires_system_integration": "BOOLEAN DEFAULT FALSE",
+        "quoted_amount": "FLOAT DEFAULT 0",
     },
     "project_risks": {
         "linked_vendor_id": "VARCHAR(36) DEFAULT ''",

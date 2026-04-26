@@ -26,8 +26,9 @@ def test_query_returns_citations_trace_and_debug_summary(client, auth_headers):
     trace = client.get(f"/trace/{payload['trace_id']}", headers=admin_headers)
     assert trace.status_code == 200
     trace_payload = trace.json()
-    assert len(trace_payload["steps"]) == 5
-    assert trace_payload["debug_summary"]["intent"] in {"qa", "compare", "workflow", "support"}
+    assert len(trace_payload["steps"]) == 4
+    assert trace_payload["debug_summary"]["task_mode"] == "knowledge_qa"
+    assert trace_payload["debug_summary"]["intent"] == "knowledge_qa"
 
 
 def test_business_cannot_use_internal_assistant_and_non_admin_cannot_search_trace(client, auth_headers):

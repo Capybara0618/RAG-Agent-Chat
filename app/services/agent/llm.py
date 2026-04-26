@@ -11,7 +11,7 @@ from app.services.retrieval.embeddings import tokenize_text
 from app.services.retrieval.service import RetrievedChunk
 
 
-SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s*")
+SENTENCE_PATTERN = re.compile(r"(?<=[.!?。！？])\s*")
 
 
 class LLMClient(LLMProvider):
@@ -20,71 +20,81 @@ class LLMClient(LLMProvider):
         self.api_key = api_key
         self.model = model
 
-    def classify_intent(self, query: str) -> tuple[str, float]:
-        lowered = query.lower()
-        if any(
-            token in lowered
-            for token in ["compare", "difference", "redline", "redlines", "vs", "versus", "对比", "差异", "红线", "条款区别"]
-        ):
-            return "compare", 0.91
-        if any(
-            token in lowered
-            for token in ["workflow", "process", "steps", "approval flow", "审批流程", "流程", "步骤", "怎么处理", "升级给谁"]
-        ):
-            return "workflow", 0.87
-        if any(
-            token in lowered
-            for token in [
-                "vendor",
-                "supplier",
-                "msa",
-                "nda",
-                "dpa",
-                "security review",
-                "onboarding",
-                "due diligence",
-                "procurement",
-                "供应商",
-                "采购",
-                "合同",
-                "准入",
-                "尽调",
-                "法务",
-                "安全评审",
-                "付款条款",
-            ]
-        ):
-            return "support", 0.84
-        return "qa", 0.67
-
-    def route_intent(self, query: str) -> str:
-        intent, _ = self.classify_intent(query)
-        return intent
-
-    def build_retrieval_plan(self, query: str, intent: str, top_k: int) -> dict[str, object]:
-        procurement_hints = self._procurement_hints(query)
-        query_variants = [query, *procurement_hints["query_variants"]]
-        source_type_hints = ["markdown", "text", "faq_csv"]
-
-        if intent == "compare":
-            query_variants.extend([f"{query} 条款差异", f"{query} 红线对比", f"{query} contract deviations"])
-        elif intent == "workflow":
-            query_variants.extend([f"{query} 审批流程", f"{query} SOP", f"{query} escalation workflow"])
-        elif intent == "support":
-            query_variants.extend([f"{query} 要求", f"{query} policy requirement", f"{query} checklist"])
-            source_type_hints = ["faq_csv", "markdown", "text"]
-
-        deduped_variants = [item for item in dict.fromkeys(query_variants) if str(item).strip()]
+    def build_retrieval_plan(self, query: str, task_mode: str, top_k: int) -> dict[str, object]:
+        defaults = self._task_defaults(task_mode)
+        query_variants = self._derive_query_variants(query=query, task_mode=task_mode)
         return {
-            "intent": intent,
-            "top_k": top_k + 1 if intent == "compare" else top_k,
+            "task_mode": task_mode,
+            "intent": task_mode,
+            "top_k": top_k + (1 if task_mode == "legal_contract_review" else 0),
             "rerank_k": max(top_k * 3, 10),
-            "allow_multi_doc": intent in {"compare", "workflow"},
-            "query_variants": deduped_variants,
-            "source_type_hints": source_type_hints,
-            "document_hints": procurement_hints["document_hints"],
-            "domain_labels": procurement_hints["domain_labels"],
+            "allow_multi_doc": task_mode == "legal_contract_review",
+            "query_variants": query_variants,
+            "source_type_hints": defaults["source_type_hints"],
+            "document_hints": defaults["document_hints"],
+            "domain_labels": defaults["domain_labels"],
         }
+
+    def _derive_query_variants(self, *, query: str, task_mode: str) -> list[str]:
+        if task_mode == "legal_contract_review":
+            return self._build_legal_query_variants(query)
+        return []
+
+    @staticmethod
+    def _build_legal_query_variants(query: str) -> list[str]:
+        normalized = " ".join(str(query).split())
+        if not normalized:
+            return []
+
+        business_match = re.search(r"业务场景=([^\n]+)", query)
+        business_terms = []
+        if business_match:
+            business_terms = [
+                part.strip()
+                for part in re.split(r"[；;|]", business_match.group(1))
+                if part.strip()
+            ]
+        business_terms = list(dict.fromkeys(business_terms))[:4]
+
+        concern_match = re.search(r"差异描述=([^\n]+)", query)
+        concern_phrases = []
+        if concern_match:
+            concern_phrases = [
+                part.strip()
+                for part in re.split(r"[；;|]", concern_match.group(1))
+                if part.strip()
+            ]
+        concern_phrases = list(dict.fromkeys(concern_phrases))[:4]
+
+        summary_match = re.search(r"差异摘要=([^\n]+)", query)
+        clause_tokens = []
+        if summary_match:
+            clause_tokens = re.findall(r"([^\s；;,=]+?)(?:缺失|弱化)", summary_match.group(1))
+        clauses = [item.strip() for item in clause_tokens if item.strip()]
+        clauses = list(dict.fromkeys(clauses))[:4]
+
+        topic_match = re.search(r"检索主题=([^\n]+)", query)
+        topics = []
+        if topic_match:
+            topics = [part.strip() for part in re.split(r"[、,，;；|]", topic_match.group(1)) if part.strip()]
+        topics = list(dict.fromkeys(topics))[:6]
+
+        variants: list[str] = []
+        if business_terms and concern_phrases:
+            variants.append(" ".join([*business_terms[:2], *concern_phrases[:2]]))
+        elif business_terms:
+            variants.append(" ".join(business_terms[:3]))
+        if concern_phrases:
+            variants.append(" ".join(concern_phrases[:2]))
+        if concern_phrases and topics:
+            variants.append(" ".join([*concern_phrases[:2], *topics[:2]]))
+        if clauses and topics:
+            variants.append(" ".join([*clauses[:2], *topics[:2]]))
+        elif clauses:
+            variants.append(" ".join(clauses[:3]))
+        elif topics:
+            variants.append(" ".join(topics[:3]))
+        return list(dict.fromkeys(item[:180] for item in variants if item.strip()))
 
     def extract_supplier_profile(
         self,
@@ -136,7 +146,7 @@ class LLMClient(LLMProvider):
         self,
         *,
         query: str,
-        intent: str,
+        task_mode: str,
         citations: list[Citation],
         retrieved_chunks: list[RetrievedChunk],
         comparison_view: dict[str, object] | None,
@@ -144,30 +154,22 @@ class LLMClient(LLMProvider):
     ) -> tuple[str, float, str]:
         if self._is_out_of_scope_query(query):
             return (
-                "当前系统定位为采购合同审查与供应商准入助手，只回答制度、条款、审批和评审流程问题，不替代法务签批或商业谈判决策。",
+                "当前系统定位为采购适配度审查和合同审查助手，只回答制度、条款、审批和评审流程问题，不替代人工做最终商业或法务决策。",
                 0.08,
                 "refuse",
             )
 
         if not citations:
-            if len(tokenize_text(query)) <= 8:
-                return (
-                    "我暂时无法在采购知识库里定位到足够证据。请补充合同类型、流程阶段，或说明是在问供应商准入、法务红线、安全评审还是审批矩阵。",
-                    0.18,
-                    "clarify",
-                )
             return (
-                "当前知识库没有足够可靠的采购制度或合同条款证据来安全回答这个问题。请上传相关合同模板、审查指引、准入制度或缩小问题范围。",
+                "当前知识库没有足够证据支持本次审查结论。请补充更具体的供应商信息、合同条款或制度范围后再试。",
                 0.12,
-                "refuse",
+                "clarify",
             )
 
-        if intent == "compare":
-            return self._compose_compare_answer(query, comparison_view, retrieved_chunks)
-        if intent == "workflow":
-            return self._compose_workflow_answer(query, retrieved_chunks)
-        if intent == "support":
-            return self._compose_support_answer(query, retrieved_chunks)
+        if task_mode == "legal_contract_review":
+            return self._compose_legal_review_answer(query, comparison_view, retrieved_chunks)
+        if task_mode == "procurement_fit_review":
+            return self._compose_procurement_fit_answer(query, retrieved_chunks)
         return self._compose_qa_answer(retrieved_chunks, bool(history))
 
     def verify_citations(self, answer: str, citations: list[Citation]) -> tuple[float, str, dict[str, object]]:
@@ -220,7 +222,7 @@ class LLMClient(LLMProvider):
         message = choices[0].get("message") or {}
         return str(message.get("content") or "").strip()
 
-    def _compose_compare_answer(
+    def _compose_legal_review_answer(
         self,
         query: str,
         comparison_view: dict[str, object] | None,
@@ -230,7 +232,7 @@ class LLMClient(LLMProvider):
             clause_matrix = comparison_view.get("clause_matrix", {})
             missing_clauses = comparison_view.get("missing_clauses", {})
             risk_flags = comparison_view.get("risk_flags", [])
-            lines = [f"条款对比结论：{query}"]
+            lines = [f"合同审查结论：{query}"]
 
             if clause_matrix:
                 lines.append("重点条款差异：")
@@ -249,7 +251,7 @@ class LLMClient(LLMProvider):
                 for item in risk_flags[:3]:
                     lines.append(f"- {item}")
 
-            lines.append("建议：若涉及责任上限、审计权、数据处理、分包限制等核心红线，应升级法务复核。")
+            lines.append("建议：若涉及责任上限、赔偿、审计权、数据处理或分包限制等核心红线，应升级法务复核。")
             return "\n".join(lines), 0.85, "answer"
 
         grouped: dict[str, list[RetrievedChunk]] = {}
@@ -257,7 +259,7 @@ class LLMClient(LLMProvider):
             grouped.setdefault(chunk.document_title, []).append(chunk)
         if len(grouped) < 2:
             return (
-                "我找到了部分条款证据，但暂时不足以做出可靠的合同差异对比。请补充标准模板或供应商回传版本。",
+                "当前命中的法务证据不足以完成可靠的合同对比，请补充标准模板或对方修改版合同。",
                 0.44,
                 "clarify",
             )
@@ -265,41 +267,21 @@ class LLMClient(LLMProvider):
         lines = [f"合同条款对比：{query}"]
         for title, chunks in list(grouped.items())[:3]:
             lines.append(f"- {title}：{self._first_sentence(chunks[0].content)}")
-        lines.append("建议进一步按责任上限、赔偿、数据处理、审计权和终止条款逐项核对。")
+        lines.append("建议继续按责任上限、赔偿、数据处理、审计权和终止条款逐项核对。")
         return "\n".join(lines), 0.79, "answer"
 
-    def _compose_workflow_answer(self, query: str, retrieved_chunks: list[RetrievedChunk]) -> tuple[str, float, str]:
-        steps: list[str] = []
-        for chunk in retrieved_chunks[:4]:
-            for sentence in SENTENCE_PATTERN.split(chunk.content):
-                cleaned = sentence.strip()
-                if cleaned and cleaned not in steps:
-                    steps.append(cleaned)
-                if len(steps) >= 4:
-                    break
-            if len(steps) >= 4:
-                break
-
-        if not steps:
-            return (
-                "我找到了相关制度，但还不足以稳定生成一份采购流程 SOP。请补充是供应商准入、合同盖章、法务红线审批还是安全评审场景。",
-                0.34,
-                "clarify",
-            )
-
-        lines = [f"建议流程：{query}"]
-        for index, step in enumerate(steps, start=1):
-            lines.append(f"{index}. {step}")
-        lines.append("执行前请以最新审批矩阵、法务模板和安全评审流程为准。")
-        return "\n".join(lines), 0.8, "answer"
-
-    def _compose_support_answer(self, query: str, retrieved_chunks: list[RetrievedChunk]) -> tuple[str, float, str]:
+    def _compose_procurement_fit_answer(
+        self,
+        query: str,
+        retrieved_chunks: list[RetrievedChunk],
+    ) -> tuple[str, float, str]:
         chunk = retrieved_chunks[0]
         lines = [
-            f"问题：{query}",
-            f"根据当前采购制度证据，答案是：{self._first_sentence(chunk.content)}",
-            "下一步建议：先按引用制度或模板执行；若涉及责任上限放宽、赔偿范围扩大、数据出境、审计权缺失等红线，请升级法务或安全复核。",
-            "边界提示：该回答用于内部审查辅助，不替代法务最终签批意见。",
+            f"供应商匹配度审查：{query}",
+            f"制度依据：{self._first_sentence(chunk.content)}",
+            "判断维度：需求是否匹配、风险是否可控、材料是否齐备。",
+            "建议：先按命中的准入制度和安全评审要求补齐材料；若涉及数据处理、关键风险或升级条件，再提交法务或安全复核。",
+            "边界提示：本结论用于采购辅助判断，不替代采购、法务或管理层的最终人工决定。",
         ]
         return "\n".join(lines), 0.81, "answer"
 
@@ -310,53 +292,36 @@ class LLMClient(LLMProvider):
             answer = f"{answer} 另外，{retrieved_chunks[1].document_title} 中也有可交叉印证的依据。"
         if has_history:
             answer = f"{answer} 这个回答也结合了当前会话中的上下文。"
-        answer = f"{answer} 请以最新版模板、审批矩阵和签署口径为准。"
+        answer = f"{answer} 请以最新版制度和模板为准。"
         return answer, 0.79, "answer"
 
-    def _procurement_hints(self, query: str) -> dict[str, list[str]]:
-        lowered = query.lower()
-        query_variants: list[str] = []
-        document_hints: list[str] = []
-        domain_labels: list[str] = []
-
-        if any(token in lowered for token in ["msa", "master service", "主协议", "主服务协议"]):
-            query_variants.extend(["master service agreement clause review", "MSA liability audit termination data processing"])
-            document_hints.extend(["msa", "master service agreement", "主服务协议", "template"])
-            domain_labels.append("contract_review")
-        if any(token in lowered for token in ["nda", "保密协议", "confidentiality"]):
-            query_variants.extend(["nda confidentiality term mutual disclosure", "保密协议 保密义务 例外情形"])
-            document_hints.extend(["nda", "保密协议", "confidentiality"])
-            domain_labels.append("contract_review")
-        if any(token in lowered for token in ["vendor", "supplier", "供应商", "准入", "onboarding", "due diligence", "尽调"]):
-            query_variants.extend(["vendor onboarding due diligence checklist", "供应商准入 尽调 清单"])
-            document_hints.extend(["vendor", "supplier", "供应商", "准入", "尽调"])
-            domain_labels.append("vendor_onboarding")
-        if any(token in lowered for token in ["security", "security review", "安全评审", "questionnaire", "iso", "soc2"]):
-            query_variants.extend(["security review questionnaire infosec review", "安全评审 问卷 等保 数据处理"])
-            document_hints.extend(["security", "infosec", "安全评审", "问卷"])
-            domain_labels.append("security_due_diligence")
-        if any(token in lowered for token in ["approval", "审批", "doa", "delegation", "matrix", "法务审批", "采购审批"]):
-            query_variants.extend(["approval matrix delegation of authority", "审批矩阵 授权级别"])
-            document_hints.extend(["approval matrix", "doa", "审批矩阵", "授权"])
-            domain_labels.append("approval_workflow")
-        if any(token in lowered for token in ["liability", "indemnity", "audit right", "termination", "责任上限", "赔偿", "审计权", "终止"]):
-            query_variants.extend(["liability cap indemnity audit right termination", "责任上限 赔偿 审计权 终止"])
-            document_hints.extend(["liability", "indemnity", "audit", "termination", "责任上限", "赔偿", "审计权"])
-            domain_labels.append("legal_redlines")
-
+    @staticmethod
+    def _task_defaults(task_mode: str) -> dict[str, list[str]]:
+        if task_mode == "procurement_fit_review":
+            return {
+                "source_type_hints": ["faq_csv", "markdown", "text"],
+                "document_hints": ["采购核心", "供应商准入", "采购审批矩阵", "安全评审"],
+                "domain_labels": ["procurement", "vendor_fit"],
+            }
+        if task_mode == "legal_contract_review":
+            return {
+                "source_type_hints": ["markdown", "text"],
+                "document_hints": ["法务核心", "合同边界", "模板要求", "风险处理", "审查说明"],
+                "domain_labels": ["legal", "contract_review"],
+            }
         return {
-            "query_variants": list(dict.fromkeys(query_variants)),
-            "document_hints": list(dict.fromkeys(document_hints)),
-            "domain_labels": list(dict.fromkeys(domain_labels)),
+            "source_type_hints": ["faq_csv", "markdown", "text"],
+            "document_hints": ["常见问答", "制度", "流程", "清单"],
+            "domain_labels": ["knowledge_qa"],
         }
 
     @staticmethod
     def _has_conflict(citations: list[Citation]) -> bool:
-        snippets = [citation.snippet for citation in citations[:4]]
+        snippets = [citation.snippet.lower() for citation in citations[:4]]
         negative_markers = ("不得", "不能", "禁止", "must not", "shall not", "not permitted")
         positive_markers = ("可以", "允许", "may", "can", "required", "must")
-        positives = sum(1 for snippet in snippets if any(marker in snippet.lower() for marker in positive_markers))
-        negatives = sum(1 for snippet in snippets if any(marker in snippet.lower() for marker in negative_markers))
+        positives = sum(1 for snippet in snippets if any(marker in snippet for marker in positive_markers))
+        negatives = sum(1 for snippet in snippets if any(marker in snippet for marker in negative_markers))
         return positives > 0 and negatives > 0 and len({citation.document_title for citation in citations}) > 1
 
     @staticmethod
@@ -387,3 +352,7 @@ class LLMClient(LLMProvider):
                 "legal opinion",
             ]
         )
+
+    @staticmethod
+    def _dedupe(items: list[str]) -> list[str]:
+        return [item for item in dict.fromkeys(str(item).strip() for item in items) if item]

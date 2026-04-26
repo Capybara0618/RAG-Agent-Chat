@@ -23,6 +23,9 @@ INTENT_LABELS = {
     "compare": "对比分析",
     "workflow": "流程生成",
     "support": "支持问询",
+    "knowledge_qa": "知识问答",
+    "procurement_fit_review": "供应商匹配度审查",
+    "legal_contract_review": "合同审查",
 }
 
 ACTION_LABELS = {
@@ -41,12 +44,12 @@ SOURCE_TYPE_LABELS = {
 }
 
 TRACE_NODE_LABELS = {
-    "Intent Router": "意图路由",
+    "Intent Router": "任务模式选择",
     "Retrieval Planner": "检索规划",
     "Tool Executor": "检索执行",
     "Answer Composer": "答案生成",
     "Citation Verifier": "引用校验",
-    "意图路由": "意图路由",
+    "意图路由": "任务模式选择",
     "检索规划": "检索规划",
     "检索执行": "检索执行",
     "答案生成": "答案生成",
@@ -254,7 +257,7 @@ def render_knowledge_page() -> None:
 
 def render_trace_page() -> None:
     st.subheader("执行轨迹")
-    st.caption("每次问答都会记录意图识别、检索规划、答案生成和引用校验的过程。")
+    st.caption("每次问答都会记录任务模式、检索规划、答案生成和引用校验的过程。")
 
     trace_id = st.text_input("Trace ID", value=st.session_state.trace_id)
     if st.button("加载轨迹", use_container_width=True):

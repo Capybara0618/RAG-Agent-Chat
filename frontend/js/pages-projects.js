@@ -51,7 +51,7 @@ function adminProjectPriority(item) {
 
 function isSupportedLegalContractFile(file) {
   const name = (file?.name || "").toLowerCase();
-  return name.endsWith(".md") || name.endsWith(".markdown") || name.endsWith(".docx");
+  return name.endsWith(".md") || name.endsWith(".markdown") || name.endsWith(".docx") || name.endsWith(".pdf");
 }
 
 function projectStageProgressIndex(stage) {
@@ -70,19 +70,33 @@ function ReviewSummaryCard({ html, title, review }) {
   if (!review) {
     return html`<div className="empty-box">当前还没有结构化审查结论。</div>`;
   }
+  const isProcurementReview = review.review_kind === "procurement_agent_review";
 
   return html`
     <div className="stack-list">
       <div className="info-box">
         <strong>${title}</strong>
-        <p className="muted">${review.summary || review.conclusion}</p>
+        <p className="muted">${review.fit_reason || review.summary || review.conclusion}</p>
         <div className="button-row">
-          <span className="status-badge ${toneOf(review.recommendation)}">${displayLabel(review.recommendation)}</span>
+          ${!isProcurementReview && review.fit_decision ? html`<span className="status-badge ${toneOf(review.fit_decision)}">${displayLabel(review.fit_decision)}</span>` : null}
+          ${!isProcurementReview ? html`<span className="status-badge ${toneOf(review.recommendation)}">${displayLabel(review.recommendation)}</span>` : null}
           ${review.risk_level ? html`<span className="status-badge ${toneOf(review.risk_level)}">${displayLabel(review.risk_level)}</span>` : null}
-          ${review.decision_suggestion ? html`<span className="status-badge ${toneOf(review.decision_suggestion)}">${displayLabel(review.decision_suggestion)}</span>` : null}
+          ${!isProcurementReview && review.decision_suggestion ? html`<span className="status-badge ${toneOf(review.decision_suggestion)}">${displayLabel(review.decision_suggestion)}</span>` : null}
+          ${!isProcurementReview && review.escalation ? html`<span className="status-badge ${toneOf(review.escalation)}">${displayLabel(review.escalation)}</span>` : null}
         </div>
         <div className="subtle" style=${{ marginTop: "10px" }}>${review.conclusion}</div>
       </div>
+
+      ${review.missing_materials?.length
+        ? html`
+            <div className="info-box">
+              <strong>缺失信息</strong>
+              <div className="stack-list">
+                ${review.missing_materials.map((item) => html`<div key=${item}>${item}</div>`)}
+              </div>
+            </div>
+          `
+        : null}
 
       ${review.check_items?.length
         ? html`
@@ -127,7 +141,7 @@ function ReviewSummaryCard({ html, title, review }) {
       ${review.blocking_issues?.length
         ? html`
             <div className="info-box">
-              <strong>审查提示</strong>
+              <strong>${isProcurementReview ? "不适配或待警惕的点" : "审查提示"}</strong>
               <div className="stack-list">
                 ${review.blocking_issues.map((item) => html`<div className="inline-alert info" key=${item}>${item}</div>`)}
               </div>
@@ -157,7 +171,7 @@ function ReviewSummaryCard({ html, title, review }) {
       ${review.open_questions?.length
         ? html`
             <div className="info-box">
-              <strong>待补问题</strong>
+              <strong>${isProcurementReview ? "建议核实事项" : "待补问题"}</strong>
               <div className="stack-list">
                 ${review.open_questions.map((item) => html`<div key=${item}>${item}</div>`)}
               </div>
@@ -214,10 +228,6 @@ export function ProjectsPage({
   const [vendorFormErrors, setVendorFormErrors] = useState({});
   const [businessCreatingNew, setBusinessCreatingNew] = useState(false);
   const [managerDialogOpen, setManagerDialogOpen] = useState(false);
-  const [vendorMaterialFiles, setVendorMaterialFiles] = useState([]);
-  const [vendorMaterialExtraction, setVendorMaterialExtraction] = useState(null);
-  const [extractingVendorMaterials, setExtractingVendorMaterials] = useState(false);
-  const [runningVendorMaterialAgent, setRunningVendorMaterialAgent] = useState(false);
   const [vendorMaterialFocus, setVendorMaterialFocus] = useState("");
   const [procurementFeedback, setProcurementFeedback] = useState("");
   const [legalContractFiles, setLegalContractFiles] = useState({});
@@ -241,13 +251,13 @@ export function ProjectsPage({
   const [draftForm, setDraftForm] = useState(createForm);
   const [vendorForm, setVendorForm] = useState({
     vendor_name: "",
-    source_platform: "",
     source_url: "",
-    contact_name: "",
     contact_email: "",
-    contact_phone: "",
     profile_summary: "",
     procurement_notes: "",
+    handles_company_data: false,
+    requires_system_integration: false,
+    quoted_amount: "",
   });
   const selectedProjectIdRef = useRef(selectedProjectId);
 
@@ -353,12 +363,8 @@ export function ProjectsPage({
       setActiveVendorId("");
     }
     if (currentUser.role === "procurement") {
-      setVendorMaterialFiles([]);
-      setVendorMaterialExtraction(projectDetail.procurement_material_session || null);
-      setVendorMaterialFocus(projectDetail.procurement_material_session?.focus_points || "");
-      if (projectDetail.procurement_material_session?.vendor_draft) {
-        fillVendorFormFromDraft(projectDetail.procurement_material_session.vendor_draft);
-      }
+      setVendorMaterialFocus("");
+      fillVendorFormFromDraft(projectDetail.vendors?.[0] || null);
     }
   }, [projectDetail?.id, projectDetail?.current_stage, projectDetail?.updated_at]);
 
@@ -425,9 +431,6 @@ export function ProjectsPage({
     () => candidateVendors.find((item) => item.id === activeVendorId) || candidateVendors[0] || null,
     [candidateVendors, activeVendorId],
   );
-  const persistedMaterialSession = useMemo(() => projectDetail?.procurement_material_session || null, [projectDetail]);
-  const hasPersistedMaterials = Boolean(persistedMaterialSession?.extracted_materials?.length);
-
   useEffect(() => {
     if (!projectDetail?.id) return;
     const previewTargets = [ourContractArtifact, counterpartyContractArtifact].filter(
@@ -442,13 +445,13 @@ export function ProjectsPage({
   function fillVendorFormFromDraft(draft) {
     setVendorForm({
       vendor_name: draft?.vendor_name || "",
-      source_platform: draft?.source_platform || "",
       source_url: draft?.source_url || "",
-      contact_name: draft?.contact_name || "",
       contact_email: draft?.contact_email || "",
-      contact_phone: draft?.contact_phone || "",
       profile_summary: draft?.profile_summary || "",
       procurement_notes: draft?.procurement_notes || "",
+      handles_company_data: Boolean(draft?.handles_company_data),
+      requires_system_integration: Boolean(draft?.requires_system_integration),
+      quoted_amount: draft?.quoted_amount ? String(draft.quoted_amount) : "",
     });
   }
 
@@ -571,10 +574,11 @@ export function ProjectsPage({
       return null;
     }
     try {
+      const normalizedVendor = normalizeVendorForm(vendorForm);
       const created = await apiPost(`/projects/${projectDetail.id}/vendors`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(vendorForm),
+        body: JSON.stringify(normalizedVendor),
       });
       setActiveVendorId(created.id);
       await refreshAll({ silent: true });
@@ -588,8 +592,6 @@ export function ProjectsPage({
 
   async function resetVendorWorkspaceAfterBind(createdVendorId = "") {
     setVendorFormErrors({});
-    setVendorMaterialFiles([]);
-    setVendorMaterialExtraction(null);
     setVendorMaterialFocus("");
     if (setAssistantTask) setAssistantTask(null);
     if (setAssistantResult) setAssistantResult(null);
@@ -609,7 +611,16 @@ export function ProjectsPage({
     try {
       const created = await createVendor(event);
       if (!created) return;
-      setVendorForm({ vendor_name: "", source_platform: "", source_url: "", contact_name: "", contact_email: "", contact_phone: "", profile_summary: "", procurement_notes: "" });
+      setVendorForm({
+        vendor_name: "",
+        source_url: "",
+        contact_email: "",
+        profile_summary: "",
+        procurement_notes: "",
+        handles_company_data: false,
+        requires_system_integration: false,
+        quoted_amount: "",
+      });
       await resetVendorWorkspaceAfterBind(created.id);
     } catch (err) {
       setError(err.message);
@@ -641,15 +652,25 @@ export function ProjectsPage({
     const draftVendor = activeVendor || {};
     const mergedVendor = {
       vendor_name: vendorForm.vendor_name || draftVendor.vendor_name || "",
-      source_platform: vendorForm.source_platform || draftVendor.source_platform || "",
       source_url: vendorForm.source_url || draftVendor.source_url || "",
-      contact_name: vendorForm.contact_name || draftVendor.contact_name || "",
       contact_email: vendorForm.contact_email || draftVendor.contact_email || "",
-      contact_phone: vendorForm.contact_phone || draftVendor.contact_phone || "",
       profile_summary: vendorForm.profile_summary || draftVendor.profile_summary || "",
       procurement_notes: vendorForm.procurement_notes || draftVendor.procurement_notes || "",
+      handles_company_data:
+        typeof vendorForm.handles_company_data === "boolean"
+          ? vendorForm.handles_company_data
+          : Boolean(draftVendor.handles_company_data),
+      requires_system_integration:
+        typeof vendorForm.requires_system_integration === "boolean"
+          ? vendorForm.requires_system_integration
+          : Boolean(draftVendor.requires_system_integration),
+      quoted_amount:
+        vendorForm.quoted_amount !== ""
+          ? Number(vendorForm.quoted_amount || 0)
+          : Number(draftVendor.quoted_amount || 0),
     };
-    const errors = vendorFormErrorsFor(mergedVendor);
+    const normalizedVendor = normalizeVendorForm(mergedVendor);
+    const errors = vendorFormErrorsFor(normalizedVendor);
     setVendorFormErrors(errors);
     if (Object.values(errors).some(Boolean)) {
       window.alert("请先补齐供应商信息，再进入 Agent 审查。");
@@ -661,16 +682,9 @@ export function ProjectsPage({
         projectId: projectDetail?.id || "",
         linkedVendorId: draftVendor.id || "",
         projectTitle: projectDetail?.title || "",
-        vendorDraft: mergedVendor,
-        uploadedFiles: vendorMaterialFiles,
-        extractionSummary: vendorMaterialExtraction?.extraction_summary || "",
-        extractedMaterials: vendorMaterialExtraction?.extracted_materials || [],
-        warnings: vendorMaterialExtraction?.warnings || [],
-        supplierProfile: vendorMaterialExtraction?.supplier_profile || persistedMaterialSession?.supplier_profile || null,
-        materialGate: vendorMaterialExtraction?.material_gate || persistedMaterialSession?.material_gate || null,
-        requirementChecks: vendorMaterialExtraction?.requirement_checks || persistedMaterialSession?.requirement_checks || [],
-        supplierDossier: vendorMaterialExtraction?.supplier_dossier || persistedMaterialSession?.supplier_dossier || null,
+        vendorDraft: normalizedVendor,
         focusPoints: vendorMaterialFocus,
+        autorun: true,
       });
     }
     if (setAssistantResult) setAssistantResult(null);
@@ -703,151 +717,6 @@ export function ProjectsPage({
     if (setAssistantResult) setAssistantResult(null);
     if (setDraftQuestion) setDraftQuestion("");
     if (onNavigate) onNavigate("assistant");
-  }
-
-  async function extractVendorMaterials() {
-    if (!projectDetail?.id) return;
-    if (!vendorMaterialFiles.length) {
-      if (persistedMaterialSession?.vendor_draft) {
-        setVendorMaterialExtraction(persistedMaterialSession);
-        fillVendorFormFromDraft(persistedMaterialSession.vendor_draft);
-        return;
-      }
-      window.alert("请先上传供应商材料。");
-      return;
-    }
-    try {
-      setExtractingVendorMaterials(true);
-      setError("");
-      const formData = new FormData();
-      vendorMaterialFiles.forEach((file) => formData.append("files", file));
-      const payload = await apiPost(`/projects/${projectDetail.id}/procurement-agent-extract`, {
-        method: "POST",
-        body: formData,
-      });
-      setVendorMaterialExtraction(payload);
-      fillVendorFormFromDraft(payload.vendor_draft);
-      setVendorFormErrors({});
-      await loadProject(projectDetail.id);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setExtractingVendorMaterials(false);
-    }
-  }
-
-  async function runVendorMaterialAgent() {
-    if (!projectDetail?.id) return;
-    if (!vendorMaterialFiles.length) {
-      if (!persistedMaterialSession?.vendor_draft) {
-        window.alert("请先上传供应商材料。");
-        return;
-      }
-      try {
-        setRunningVendorMaterialAgent(true);
-        setError("");
-        const payload = await apiPost(`/projects/${projectDetail.id}/procurement-agent-review`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...persistedMaterialSession.vendor_draft,
-            supplier_profile: persistedMaterialSession.supplier_profile,
-            focus_points: vendorMaterialFocus,
-            top_k: 6,
-          }),
-        });
-        if (setAssistantTask) {
-          setAssistantTask({
-            kind: "procurement_vendor_review",
-            projectId: projectDetail.id,
-            linkedVendorId: "",
-            projectTitle: projectDetail.title || "",
-            vendorDraft: persistedMaterialSession.vendor_draft,
-            uploadedFiles: [],
-            extractionSummary: persistedMaterialSession.extraction_summary || "",
-            extractedMaterials: persistedMaterialSession.extracted_materials || [],
-            warnings: persistedMaterialSession.warnings || [],
-            supplierProfile: persistedMaterialSession.supplier_profile || null,
-            materialGate: persistedMaterialSession.material_gate || null,
-            requirementChecks: persistedMaterialSession.requirement_checks || [],
-            supplierDossier: persistedMaterialSession.supplier_dossier || null,
-            focusPoints: vendorMaterialFocus,
-          });
-        }
-        if (setAssistantResult) {
-          setAssistantResult({
-            ...payload,
-            vendor_draft: persistedMaterialSession.vendor_draft,
-            extraction_summary: persistedMaterialSession.extraction_summary || "",
-            extracted_materials: persistedMaterialSession.extracted_materials || [],
-            warnings: persistedMaterialSession.warnings || [],
-            supplier_profile: persistedMaterialSession.supplier_profile || null,
-            material_gate: persistedMaterialSession.material_gate || null,
-            requirement_checks: persistedMaterialSession.requirement_checks || [],
-            supplier_dossier: persistedMaterialSession.supplier_dossier || null,
-          });
-        }
-        if (onTraceCreated) onTraceCreated(payload.review.trace_id);
-        if (setDraftQuestion) setDraftQuestion("");
-        await loadProject(projectDetail.id);
-        if (onNavigate) onNavigate("assistant");
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setRunningVendorMaterialAgent(false);
-      }
-      return;
-    }
-    try {
-      setRunningVendorMaterialAgent(true);
-      setError("");
-      const formData = new FormData();
-      vendorMaterialFiles.forEach((file) => formData.append("files", file));
-      formData.append("focus_points", vendorMaterialFocus);
-      formData.append("top_k", "6");
-      const payload = await apiPost(`/projects/${projectDetail.id}/procurement-agent-run`, {
-        method: "POST",
-        body: formData,
-      });
-      setVendorMaterialExtraction({
-        extraction_summary: payload.extraction_summary,
-        extracted_materials: payload.extracted_materials,
-        warnings: payload.warnings,
-        supplier_profile: payload.supplier_profile,
-        material_gate: payload.material_gate,
-        requirement_checks: payload.requirement_checks,
-        supplier_dossier: payload.supplier_dossier,
-      });
-      fillVendorFormFromDraft(payload.vendor_draft);
-      setVendorFormErrors({});
-      if (setAssistantTask) {
-        setAssistantTask({
-          kind: "procurement_vendor_review",
-          projectId: projectDetail.id,
-          linkedVendorId: "",
-          projectTitle: projectDetail.title || "",
-          vendorDraft: payload.vendor_draft,
-          uploadedFiles: vendorMaterialFiles,
-          extractionSummary: payload.extraction_summary,
-          extractedMaterials: payload.extracted_materials || [],
-          warnings: payload.warnings || [],
-          supplierProfile: payload.supplier_profile || null,
-          materialGate: payload.material_gate || null,
-          requirementChecks: payload.requirement_checks || [],
-          supplierDossier: payload.supplier_dossier || null,
-          focusPoints: vendorMaterialFocus,
-        });
-      }
-      if (setAssistantResult) setAssistantResult(payload);
-      if (onTraceCreated) onTraceCreated(payload.review.trace_id);
-      if (setDraftQuestion) setDraftQuestion("");
-      await loadProject(projectDetail.id);
-      if (onNavigate) onNavigate("assistant");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setRunningVendorMaterialAgent(false);
-    }
   }
 
   async function reviewVendor() {
@@ -1212,20 +1081,41 @@ export function ProjectsPage({
   function vendorFormErrorsFor(form) {
     const errors = {};
     if (!form.vendor_name?.trim()) errors.vendor_name = "请填写供应商名称。";
-    if (!form.source_platform?.trim()) errors.source_platform = "请填写来源平台。";
-    if (form.source_url?.trim()) {
+    if (!form.source_url?.trim()) {
+      errors.source_url = "请填写官网或公开来源链接。";
+    } else {
       try {
         new URL(form.source_url.trim());
       } catch (_) {
         errors.source_url = "来源链接格式不正确。";
       }
     }
-    if (form.contact_email?.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.contact_email.trim())) {
+    if (!form.contact_email?.trim()) {
+      errors.contact_email = "请填写供应商联系邮箱。";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.contact_email.trim())) {
       errors.contact_email = "联系人邮箱格式不正确。";
     }
     if ((form.profile_summary || "").trim().length < 10) errors.profile_summary = "供应商简介至少填写 10 个字。";
     if ((form.procurement_notes || "").trim().length < 10) errors.procurement_notes = "采购说明至少填写 10 个字。";
+    if (!(Number(form.quoted_amount || 0) > 0)) errors.quoted_amount = "请填写报价或预计合作金额。";
     return errors;
+  }
+
+  function normalizeVendorForm(form) {
+    const normalizedUrl = (form.source_url || "").trim();
+    return {
+      vendor_name: (form.vendor_name || "").trim(),
+      source_platform: normalizedUrl ? "官网" : "手工录入",
+      source_url: normalizedUrl,
+      contact_name: "",
+      contact_email: (form.contact_email || "").trim(),
+      contact_phone: "",
+      profile_summary: (form.profile_summary || "").trim(),
+      procurement_notes: (form.procurement_notes || "").trim(),
+      handles_company_data: Boolean(form.handles_company_data),
+      requires_system_integration: Boolean(form.requires_system_integration),
+      quoted_amount: Number(form.quoted_amount || 0),
+    };
   }
 
   function updateBusinessForm(field, value) {
@@ -1323,7 +1213,7 @@ export function ProjectsPage({
       return;
     }
     if (!isSupportedLegalContractFile(file)) {
-      window.alert("当前法务合同上传仅支持 .md 和 .docx 格式。");
+      window.alert("当前法务合同上传支持 .md、.docx 和 .pdf 格式。");
       return;
     }
     try {
@@ -1386,7 +1276,7 @@ export function ProjectsPage({
       return next;
     });
     if (!isSupportedLegalContractFile(file)) {
-      window.alert("当前法务合同上传仅支持 .md 和 .docx 格式。");
+      window.alert("当前法务合同上传支持 .md、.docx 和 .pdf 格式。");
       setLegalContractFiles((current) => {
         const next = { ...current };
         delete next[artifact.id];
@@ -2048,17 +1938,16 @@ export function ProjectsPage({
     const vendorErrors = vendorFormErrorsFor(vendorForm);
     const procurementAssistantAssessment =
       assistantTask?.kind === "procurement_vendor_review" && assistantTask?.projectId === projectDetail?.id
-        ? assistantResult?.assessment || null
-        : null;
+        ? assistantResult?.assessment || activeCandidateVendor?.structured_review || activeVendor?.structured_review || null
+        : activeCandidateVendor?.structured_review || activeVendor?.structured_review || null;
     const procurementAssistantReview = procurementAssistantAssessment ? assistantResult?.review || null : null;
-    const procurementAssistantGate =
-      assistantTask?.kind === "procurement_vendor_review" && assistantTask?.projectId === projectDetail?.id
-        ? assistantResult?.material_gate || persistedMaterialSession?.material_gate || null
-        : persistedMaterialSession?.material_gate || null;
+    const procurementAssistantGate = assistantTask?.kind === "procurement_vendor_review" && assistantTask?.projectId === projectDetail?.id
+      ? assistantResult?.material_gate || null
+      : null;
     const procurementRequirementChecks =
       assistantTask?.kind === "procurement_vendor_review" && assistantTask?.projectId === projectDetail?.id
-        ? assistantResult?.requirement_checks || persistedMaterialSession?.requirement_checks || []
-        : persistedMaterialSession?.requirement_checks || [];
+        ? assistantResult?.requirement_checks || []
+        : [];
     const procurementBlockingReasons = procurementAssistantGate?.blocking_reasons || [];
     const procurementMissingMaterials = procurementRequirementChecks.filter((item) => item.required && item.status !== "pass");
     const hasAssistantDecision = Boolean(procurementAssistantAssessment || activeVendor?.structured_review);
@@ -2067,21 +1956,14 @@ export function ProjectsPage({
       actions.has("select_vendor") &&
       !["legal_rejected", "rejected"].includes(activeCandidateVendor?.status || "") &&
       hasAssistantDecision &&
-      procurementAssistantGate?.decision === "pass" &&
-      !["reject_irrelevant_materials", "needs_required_materials"].includes(procurementAssistantAssessment?.recommendation || "") &&
       Boolean(activeCandidateVendor?.id);
-    const uploadStatusText = vendorMaterialExtraction?.extracted_materials?.length
-      ? `已成功上传 ${vendorMaterialExtraction.extracted_materials.length} 份材料。`
-      : hasPersistedMaterials
-        ? `已保存 ${persistedMaterialSession.extracted_materials.length} 份材料，可继续使用。`
-        : "";
 
     return html`
       <div>
         <div className="topbar">
           <div>
             <h2>采购执行工作台</h2>
-            <p>采购只需要上传材料并点击一次确认按钮，系统会自动解析供应商信息、跳转审查助手并返回审查结果。</p>
+            <p>采购阶段不再上传附件，只填写当前供应商的核心信息，系统就会基于采购制度给出适配度建议。</p>
           </div>
         </div>
         ${error ? html`<div className="error" style=${{ marginBottom: "18px" }}>${error}</div>` : null}
@@ -2143,100 +2025,75 @@ export function ProjectsPage({
                       <div className="subtle">${projectDetail.business_value || "暂无说明"}</div>
                     </div>
 
-                    ${projectDetail.current_stage === "procurement_sourcing" && projectDetail.status === "active"
-                      ? html`
-                          <div className="procurement-workbench-grid" style=${{ marginTop: "20px" }}>
-                            <div className="panel procurement-upload-panel">
+                        ${projectDetail.current_stage === "procurement_sourcing" && projectDetail.status === "active"
+                          ? html`
+                          <div className="procurement-form-shell" style=${{ marginTop: "20px" }}>
+                            <div className="panel procurement-form-panel procurement-form-panel-compact">
                               <div className="section-title-row">
                                 <div>
-                                  <h4>1. 上传供应商材料</h4>
-                                  <div className="subtle">这里负责上传材料；上传成功后，系统会自动把解析出的供应商信息填到右侧区域。</div>
+                                  <h4>1. 供应商基本信息</h4>
+                                  <div className="subtle">采购阶段只填写核心字段。系统会结合项目背景，判断当前供应商是否适合继续推进。</div>
                                 </div>
                               </div>
-                              <div className="stack-list" style=${{ marginTop: "16px" }}>
-                                ${uploadStatusText
-                                  ? html`<div className="inline-alert info">${uploadStatusText}</div>`
-                                  : null}
-                                <input
-                                  className="field"
-                                  type="file"
-                                  multiple=${true}
-                                  accept=".pdf,.doc,.docx,.md,.markdown,.txt,.csv"
-                                  onChange=${(e) => setVendorMaterialFiles(Array.from(e.target.files || []))}
-                                />
-                                ${vendorMaterialFiles.length
-                                  ? html`
-                                      <div className="stack-list">
-                                        ${vendorMaterialFiles.map((file) => html`
-                                          <div className="activity-item" key=${`${file.name}-${file.size}`}>
-                                            <div className="activity-main">
-                                              <strong>${file.name}</strong>
-                                              <div className="subtle">${Math.max(1, Math.round(file.size / 1024))} KB</div>
-                                            </div>
-                                          </div>
-                                        `)}
-                                      </div>
-                                    `
-                                  : null}
-                                <div className="button-row">
-                                  <button className="btn primary" type="button" onClick=${runVendorMaterialAgent} disabled=${runningVendorMaterialAgent || (!vendorMaterialFiles.length && !hasPersistedMaterials)}>
-                                    ${runningVendorMaterialAgent ? "系统处理中..." : vendorMaterialFiles.length ? "确认上传并解析" : "使用已保存材料继续解析"}
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="panel procurement-form-panel">
-                              <div className="section-title-row">
-                                <div>
-                                  <h4>2. 供应商基本信息</h4>
-                                  <div className="subtle">系统会自动把材料解析成供应商基础资料，这里作为主要信息区展示给采购核对。</div>
-                                </div>
+                              <div className="procurement-form-intro">
+                                <span className="status-badge neutral">结构化输入</span>
+                                <span className="status-badge neutral">自动审查</span>
+                                <span className="status-badge neutral">适配度结论</span>
                               </div>
                               <div className="business-form" style=${{ marginTop: "16px" }}>
-                                <div className="business-form-grid">
-                                  <label className="business-form-field">
+                                <div className="business-form-grid procurement-form-grid">
+                                  <label className="business-form-field procurement-form-lead">
                                     <span className="business-form-label">供应商名称</span>
                                     <input className=${vendorErrors.vendor_name || vendorFormErrors.vendor_name ? "field error" : "field"} placeholder="填写供应商名称" value=${vendorForm.vendor_name} onInput=${(e) => updateVendorField("vendor_name", e.target.value)} />
                                     ${(vendorErrors.vendor_name || vendorFormErrors.vendor_name) ? html`<small className="field-error-text">${vendorErrors.vendor_name || vendorFormErrors.vendor_name}</small>` : null}
                                   </label>
-                                  <label className="business-form-field">
-                                    <span className="business-form-label">来源平台</span>
-                                    <input className=${vendorErrors.source_platform || vendorFormErrors.source_platform ? "field error" : "field"} placeholder="例如：官网 / 1688 / 招投标平台" value=${vendorForm.source_platform} onInput=${(e) => updateVendorField("source_platform", e.target.value)} />
-                                    ${(vendorErrors.source_platform || vendorFormErrors.source_platform) ? html`<small className="field-error-text">${vendorErrors.source_platform || vendorFormErrors.source_platform}</small>` : null}
-                                  </label>
-                                  <label className="business-form-field full">
-                                    <span className="business-form-label">来源链接</span>
-                                    <input className=${vendorErrors.source_url || vendorFormErrors.source_url ? "field error" : "field"} placeholder="选填，建议填写官网或公开来源链接" value=${vendorForm.source_url} onInput=${(e) => updateVendorField("source_url", e.target.value)} />
+                                  <label className="business-form-field procurement-form-source">
+                                    <span className="business-form-label">官网或公开来源链接</span>
+                                    <input className=${vendorErrors.source_url || vendorFormErrors.source_url ? "field error" : "field"} placeholder="建议填写官网、公开产品页或招投标页面链接" value=${vendorForm.source_url} onInput=${(e) => updateVendorField("source_url", e.target.value)} />
                                     ${(vendorErrors.source_url || vendorFormErrors.source_url) ? html`<small className="field-error-text">${vendorErrors.source_url || vendorFormErrors.source_url}</small>` : null}
                                   </label>
                                   <label className="business-form-field">
-                                    <span className="business-form-label">联系人</span>
-                                    <input className="field" placeholder="例如：张三" value=${vendorForm.contact_name} onInput=${(e) => updateVendorField("contact_name", e.target.value)} />
-                                  </label>
-                                  <label className="business-form-field">
-                                    <span className="business-form-label">联系邮箱</span>
-                                    <input className=${vendorErrors.contact_email || vendorFormErrors.contact_email ? "field error" : "field"} placeholder="例如：vendor@example.com" value=${vendorForm.contact_email} onInput=${(e) => updateVendorField("contact_email", e.target.value)} />
+                                    <span className="business-form-label">供应商联系邮箱</span>
+                                    <input className=${vendorErrors.contact_email || vendorFormErrors.contact_email ? "field error" : "field"} placeholder="用于后续法务发送合同" value=${vendorForm.contact_email} onInput=${(e) => updateVendorField("contact_email", e.target.value)} />
                                     ${(vendorErrors.contact_email || vendorFormErrors.contact_email) ? html`<small className="field-error-text">${vendorErrors.contact_email || vendorFormErrors.contact_email}</small>` : null}
                                   </label>
-                                  <label className="business-form-field full">
-                                    <span className="business-form-label">联系电话</span>
-                                    <input className="field" placeholder="例如：13800000000 / 400-800-9000" value=${vendorForm.contact_phone} onInput=${(e) => updateVendorField("contact_phone", e.target.value)} />
+                                  <label className="business-form-field">
+                                    <span className="business-form-label">报价或预计合作金额</span>
+                                    <input className=${vendorErrors.quoted_amount || vendorFormErrors.quoted_amount ? "field error" : "field"} type="number" min="0" step="0.01" placeholder="填写本次报价或预计合作金额" value=${vendorForm.quoted_amount} onInput=${(e) => updateVendorField("quoted_amount", e.target.value)} />
+                                    ${(vendorErrors.quoted_amount || vendorFormErrors.quoted_amount) ? html`<small className="field-error-text">${vendorErrors.quoted_amount || vendorFormErrors.quoted_amount}</small>` : null}
                                   </label>
-                                  <label className="business-form-field full">
-                                    <span className="business-form-label">供应商简介</span>
-                                    <textarea className=${vendorErrors.profile_summary || vendorFormErrors.profile_summary ? "field error textarea-medium" : "field textarea-medium"} placeholder="说明公司背景、产品范围和关键能力" value=${vendorForm.profile_summary} onInput=${(e) => updateVendorField("profile_summary", e.target.value)}></textarea>
+                                  <label className="business-form-field">
+                                    <span className="business-form-label">是否处理公司 / 客户数据</span>
+                                    <select className="field" value=${vendorForm.handles_company_data ? "yes" : "no"} onChange=${(e) => updateVendorField("handles_company_data", e.target.value === "yes")}>
+                                      <option value="no">否</option>
+                                      <option value="yes">是</option>
+                                    </select>
+                                  </label>
+                                  <label className="business-form-field">
+                                    <span className="business-form-label">是否需要系统对接</span>
+                                    <select className="field" value=${vendorForm.requires_system_integration ? "yes" : "no"} onChange=${(e) => updateVendorField("requires_system_integration", e.target.value === "yes")}>
+                                      <option value="no">否</option>
+                                      <option value="yes">是</option>
+                                    </select>
+                                  </label>
+                                  <label className="business-form-field">
+                                    <span className="business-form-label">产品 / 服务简介</span>
+                                    <textarea className=${vendorErrors.profile_summary || vendorFormErrors.profile_summary ? "field error textarea-medium" : "field textarea-medium"} placeholder="说明供应商做什么、产品能力是什么、和本次采购需求有什么关系" value=${vendorForm.profile_summary} onInput=${(e) => updateVendorField("profile_summary", e.target.value)}></textarea>
                                     ${(vendorErrors.profile_summary || vendorFormErrors.profile_summary) ? html`<small className="field-error-text">${vendorErrors.profile_summary || vendorFormErrors.profile_summary}</small>` : null}
                                   </label>
-                                  <label className="business-form-field full">
-                                    <span className="business-form-label">采购说明</span>
-                                    <textarea className=${vendorErrors.procurement_notes || vendorFormErrors.procurement_notes ? "field error textarea-medium" : "field textarea-medium"} placeholder="填写采购原因、使用场景，以及为什么考虑这家供应商" value=${vendorForm.procurement_notes} onInput=${(e) => updateVendorField("procurement_notes", e.target.value)}></textarea>
+                                  <label className="business-form-field">
+                                    <span className="business-form-label">采购说明 / 使用场景</span>
+                                    <textarea className=${vendorErrors.procurement_notes || vendorFormErrors.procurement_notes ? "field error textarea-medium" : "field textarea-medium"} placeholder="填写采购用途、预算判断、为什么考虑这家供应商，以及是否涉及系统对接或数据处理" value=${vendorForm.procurement_notes} onInput=${(e) => updateVendorField("procurement_notes", e.target.value)}></textarea>
                                     ${(vendorErrors.procurement_notes || vendorFormErrors.procurement_notes) ? html`<small className="field-error-text">${vendorErrors.procurement_notes || vendorFormErrors.procurement_notes}</small>` : null}
+                                  </label>
+                                  <label className="business-form-field full">
+                                    <span className="business-form-label">采购关注点</span>
+                                    <textarea className="field textarea-medium" placeholder="选填，例如：重点关注客户数据处理、部署方式、价格是否在预算内等" value=${vendorMaterialFocus} onInput=${(e) => setVendorMaterialFocus(e.target.value)}></textarea>
                                   </label>
                                 </div>
                                 <div className="split-fields">
-                                  <div className="subtle">上传后系统会自动填充这里的内容，并在下一步给出审查助手判断。</div>
-                                  <div className="subtle">${activeVendor?.id ? `当前已绑定供应商：${activeVendor.vendor_name || "-"}` : "当前还没有手动绑定供应商，首次通过审查后会自动绑定。"}</div>
+                                  <div className="subtle">系统会基于这些核心字段，分析供应商的风险点、不适配项、待补充信息和可参考的制度依据，供采购人工判断。</div>
+                                  <div className="subtle">${activeVendor?.id ? `当前已带入供应商：${activeVendor.vendor_name || "-"}` : "当前还没有选中的供应商，填写表单后也可以直接发起审查。"}</div>
                                 </div>
                               </div>
                             </div>
@@ -2270,16 +2127,17 @@ export function ProjectsPage({
                             `)}
                           </div>
                         `
-                      : html`<div className="empty-box">当前还没有通过基础审查的候选供应商。先上传材料并完成自动审查。</div>`}
+                      : html`<div className="empty-box">当前还没有通过基础审查的候选供应商。先填写核心字段并完成一次系统审查。</div>`}
 
                     <div className="info-box">
                       <strong>${activeCandidateVendor ? "当前候选供应商" : "系统解析草稿"}</strong>
                       <div className="stack-list" style=${{ marginTop: "10px" }}>
                         <div className="subtle">供应商：${activeCandidateVendor?.vendor_name || vendorForm.vendor_name || "-"}</div>
-                        <div className="subtle">来源：${activeCandidateVendor?.source_platform || vendorForm.source_platform || "-"} ${(activeCandidateVendor?.source_url || vendorForm.source_url) ? `/ ${activeCandidateVendor?.source_url || vendorForm.source_url}` : ""}</div>
-                        <div className="subtle">联系人：${activeCandidateVendor?.contact_name || vendorForm.contact_name || "-"}</div>
+                        <div className="subtle">来源：${activeCandidateVendor?.source_platform || ((activeCandidateVendor?.source_url || vendorForm.source_url) ? "官网" : "-")} ${(activeCandidateVendor?.source_url || vendorForm.source_url) ? `/ ${activeCandidateVendor?.source_url || vendorForm.source_url}` : ""}</div>
                         <div className="subtle">联系邮箱：${activeCandidateVendor?.contact_email || vendorForm.contact_email || "-"}</div>
-                        <div className="subtle">联系电话：${activeCandidateVendor?.contact_phone || vendorForm.contact_phone || "-"}</div>
+                        <div className="subtle">报价：${Number(activeCandidateVendor?.quoted_amount || vendorForm.quoted_amount || 0) > 0 ? `${Number(activeCandidateVendor?.quoted_amount || vendorForm.quoted_amount || 0).toLocaleString("zh-CN")} ${projectDetail.currency || "CNY"}` : "-"}</div>
+                        <div className="subtle">处理公司 / 客户数据：${(activeCandidateVendor?.handles_company_data ?? vendorForm.handles_company_data) ? "是" : "否"}</div>
+                        <div className="subtle">需要系统对接：${(activeCandidateVendor?.requires_system_integration ?? vendorForm.requires_system_integration) ? "是" : "否"}</div>
                         <div className="subtle">简介：${activeCandidateVendor?.profile_summary || vendorForm.profile_summary || "暂无"}</div>
                         <div className="subtle">采购说明：${activeCandidateVendor?.procurement_notes || vendorForm.procurement_notes || "暂无说明"}</div>
                       </div>
@@ -2314,6 +2172,9 @@ export function ProjectsPage({
                               ${procurementAssistantReview?.trace_id
                                 ? html`<div className="subtle">最近一次审查 Trace：${procurementAssistantReview.trace_id.slice(0, 8)}</div>`
                                 : null}
+                              ${!procurementAssistantReview?.trace_id && procurementAssistantAssessment?.fit_reason
+                                ? html`<div className="subtle">已保存最近一次适配度结论，可直接继续处理。</div>`
+                                : null}
                             </div>
                           `
                         : html`<div className="subtle" style=${{ marginTop: "10px" }}>先去审查助手完成一次判断，再由采购决定是否上传给法务。</div>`}
@@ -2321,7 +2182,7 @@ export function ProjectsPage({
 
                     <div className="button-row">
                       <button className="btn secondary" type="button" onClick=${openProcurementAssistant} disabled=${!projectDetail}>
-                        前往审查助手
+                        审查当前供应商
                       </button>
                       <button
                         className="btn primary"
@@ -2454,7 +2315,7 @@ export function ProjectsPage({
                             <div className="section-title-row">
                               <div>
                                 <h4>1. 上传两份采购合同</h4>
-                                <div className="subtle">法务页面只保留最核心的合同上传区：我方采购合同和对方修改后的采购合同。当前建议上传 md / docx，选择文件后点击上传，成功后即可进入自动审查。</div>
+                                <div className="subtle">法务页面只保留最核心的合同上传区：我方采购合同和对方修改后的采购合同。支持上传 PDF / DOCX / Markdown，成功后即可进入自动审查。</div>
                               </div>
                             </div>
                             <div className="stack-list" style=${{ marginTop: "16px" }}>
@@ -2486,7 +2347,7 @@ export function ProjectsPage({
                                               <input
                                                 className="field"
                                                 type="file"
-                                                accept=".md,.markdown,.docx"
+                                                accept=".md,.markdown,.docx,.pdf"
                                                 disabled=${!canEditLegalContracts}
                                                 onChange=${(event) => handleLegalContractSelection(ourContractArtifact, event)}
                                               />
@@ -2560,7 +2421,7 @@ ${legalArtifactPreviews[ourContractArtifact.id].text_content}
                                               <input
                                                 className="field"
                                                 type="file"
-                                                accept=".md,.markdown,.docx"
+                                                accept=".md,.markdown,.docx,.pdf"
                                                 disabled=${!canEditLegalContracts}
                                                 onChange=${(event) => handleLegalContractSelection(counterpartyContractArtifact, event)}
                                               />
@@ -2964,16 +2825,23 @@ ${legalArtifactPreviews[counterpartyContractArtifact.id].text_content}
               <form className="stack-list" onSubmit=${createVendorManually}>
                 <input className="field" placeholder="供应商名称" value=${vendorForm.vendor_name} onInput=${(e) => updateVendorField("vendor_name", e.target.value)} />
                 <div className="split-fields">
-                  <input className="field" placeholder="来源平台" value=${vendorForm.source_platform} onInput=${(e) => updateVendorField("source_platform", e.target.value)} />
                   <input className=${vendorFormErrors.source_url ? "field error" : "field"} placeholder="来源链接" value=${vendorForm.source_url} onInput=${(e) => updateVendorField("source_url", e.target.value)} />
-                </div>
-                ${vendorFormErrors.source_url ? html`<small className="field-error-text">${vendorFormErrors.source_url}</small>` : null}
-                <div className="split-fields">
-                  <input className="field" placeholder="联系人" value=${vendorForm.contact_name} onInput=${(e) => updateVendorField("contact_name", e.target.value)} />
                   <input className=${vendorFormErrors.contact_email ? "field error" : "field"} placeholder="联系邮箱" value=${vendorForm.contact_email} onInput=${(e) => updateVendorField("contact_email", e.target.value)} />
                 </div>
+                ${vendorFormErrors.source_url ? html`<small className="field-error-text">${vendorFormErrors.source_url}</small>` : null}
                 ${vendorFormErrors.contact_email ? html`<small className="field-error-text">${vendorFormErrors.contact_email}</small>` : null}
-                <input className="field" placeholder="联系电话" value=${vendorForm.contact_phone} onInput=${(e) => updateVendorField("contact_phone", e.target.value)} />
+                <div className="split-fields">
+                  <select className="field" value=${vendorForm.handles_company_data ? "yes" : "no"} onChange=${(e) => updateVendorField("handles_company_data", e.target.value === "yes")}>
+                    <option value="no">不处理公司/客户数据</option>
+                    <option value="yes">处理公司/客户数据</option>
+                  </select>
+                  <select className="field" value=${vendorForm.requires_system_integration ? "yes" : "no"} onChange=${(e) => updateVendorField("requires_system_integration", e.target.value === "yes")}>
+                    <option value="no">不需要系统对接</option>
+                    <option value="yes">需要系统对接</option>
+                  </select>
+                </div>
+                <input className=${vendorFormErrors.quoted_amount ? "field error" : "field"} type="number" min="0" step="0.01" placeholder="报价或预计合作金额" value=${vendorForm.quoted_amount} onInput=${(e) => updateVendorField("quoted_amount", e.target.value)} />
+                ${vendorFormErrors.quoted_amount ? html`<small className="field-error-text">${vendorFormErrors.quoted_amount}</small>` : null}
                 <textarea className="field textarea-medium" placeholder="公司简介与来源说明" value=${vendorForm.profile_summary} onInput=${(e) => updateVendorField("profile_summary", e.target.value)}></textarea>
                 <textarea className="field textarea-medium" placeholder="采购说明" value=${vendorForm.procurement_notes} onInput=${(e) => updateVendorField("procurement_notes", e.target.value)}></textarea>
                 <div className="button-row"><button className="btn secondary" type="submit">新增候选供应商</button></div>

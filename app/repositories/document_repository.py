@@ -237,9 +237,13 @@ class DocumentRepository:
         embedding: list[float],
         user_role: str,
         candidate_limit: int,
+        allowed_document_ids: list[str] | None = None,
     ) -> list[dict[str, object]]:
         if not self.is_pgvector_enabled(db) or not embedding:
             return []
+
+        allowed_ids = [item for item in (allowed_document_ids or []) if item]
+        document_filter = "AND d.id = ANY(CAST(:allowed_document_ids AS text[]))" if allowed_ids else ""
 
         rows = db.execute(
             text(
@@ -248,6 +252,7 @@ class DocumentRepository:
                     c.id AS chunk_id,
                     c.document_id AS document_id,
                     d.title AS document_title,
+                    d.tags AS document_tags,
                     d.source_type AS source_type,
                     c.location AS location,
                     c.content AS content,
@@ -258,15 +263,18 @@ class DocumentRepository:
                 WHERE d.status = :status
                   AND c.embedding_vector IS NOT NULL
                   AND d.allowed_roles LIKE :role_pattern
+                  {document_filter}
                 ORDER BY c.embedding_vector <=> CAST(:embedding AS vector)
                 LIMIT :candidate_limit
                 """
+                .replace("{document_filter}", document_filter)
             ),
             {
                 "embedding": json.dumps(embedding),
                 "status": IndexingTaskStatus.indexed.value,
                 "role_pattern": f"%{user_role}%",
                 "candidate_limit": candidate_limit,
+                "allowed_document_ids": allowed_ids,
             },
         ).mappings()
         return [dict(row) for row in rows]

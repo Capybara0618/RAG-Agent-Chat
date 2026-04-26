@@ -103,7 +103,7 @@ export function ActivityList({ html, items, emptyText, onPick }) {
             <div className="activity-main">
               <strong>${item.title || item.source_name || item.query}</strong>
               <div className="subtle">
-                ${item.subtitle || displayLabel(item.intent) || item.id || item.trace_id}
+                ${item.subtitle || displayLabel(item.task_mode || item.intent) || item.id || item.trace_id}
               </div>
             </div>
             <div className="activity-meta">

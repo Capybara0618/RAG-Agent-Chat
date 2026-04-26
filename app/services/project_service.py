@@ -27,7 +27,7 @@ from app.models.entities import (
 from app.repositories.project_repository import ProjectRepository
 from app.schemas.auth import UserProfileRead
 from app.schemas.chat import QueryRequest, QueryResponse
-from app.schemas.common import ToolCallRead
+from app.schemas.common import Citation, ToolCallRead
 from app.schemas.project import (
     ProcurementAgentExtractResult,
     ProcurementAgentRunResult,
@@ -78,6 +78,7 @@ from app.schemas.project import (
 )
 from app.services.agent.service import KnowledgeOpsAgentService
 from app.services.ingestion.connectors import DocumentParser
+from app.services.retrieval.embeddings import tokenize_text
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,9 @@ class ProcurementAgentVendorDraft:
     contact_phone: str = ""
     profile_summary: str = ""
     procurement_notes: str = ""
+    handles_company_data: bool = False
+    requires_system_integration: bool = False
+    quoted_amount: float = 0.0
     ai_recommendation: str = ""
 
 
@@ -172,6 +176,19 @@ class ProjectService:
         "请对比我方采购合同与对方修改后的采购合同，聚焦责任限制、赔偿或违约责任、解约条件、保密义务、"
         "争议解决与适用法律等核心红线，输出结构化结论、问题条款、建议动作，并给出引用依据。"
     )
+    LEGAL_CONCERN_DESCRIPTIONS = {
+        "责任上限": "整体赔付范围被明显压缩",
+        "赔偿责任": "违约或侵权后的赔付责任被明显缩小",
+        "审计权": "我方对供应商的核查与监督能力被削弱",
+        "数据处理": "数据使用、存放或传输边界被放宽",
+        "保密义务": "保密信息对外共享限制被放松",
+        "安全事件通知": "安全事件通报时限从固定要求变成模糊表述",
+        "分包限制": "供应商可自行引入第三方或子处理方",
+        "便利终止": "我方提前退出合同的权利被压缩",
+        "付款条款": "付款安排前置或预付款比例偏高",
+        "服务水平": "量化服务承诺被改成尽力而为",
+        "争议解决与适用法律": "适用法律或争议解决地点偏向境外",
+    }
 
     STAGE_BLUEPRINTS = {
         ProcurementStage.business_draft.value: StageBlueprint(
@@ -297,6 +314,9 @@ class ProjectService:
                 contact_phone="",
                 profile_summary=payload.summary,
                 procurement_notes="业务发起时录入的候选供应商。",
+                handles_company_data=bool(payload.data_scope and payload.data_scope != "none"),
+                requires_system_integration=payload.category in {"software", "customer-support-saas"},
+                quoted_amount=float(payload.budget_amount or 0),
             )
         self._refresh_active_stage_blocking_reason(db, project)
         db.commit()
@@ -334,6 +354,9 @@ class ProjectService:
                 contact_phone="400-800-9000",
                 profile_summary="备选 SaaS 供应商，价格更低但合同条款较弱。",
                 procurement_notes="演示项目中附带的备选供应商。",
+                handles_company_data=True,
+                requires_system_integration=True,
+                quoted_amount=980000,
             )
         db.commit()
         return self.get_project_detail(db, detail.id)
@@ -570,6 +593,9 @@ class ProjectService:
             contact_phone=payload.contact_phone,
             profile_summary=payload.profile_summary,
             procurement_notes=payload.procurement_notes,
+            handles_company_data=payload.handles_company_data,
+            requires_system_integration=payload.requires_system_integration,
+            quoted_amount=float(payload.quoted_amount or 0),
         )
         self._refresh_active_stage_blocking_reason(db, project)
         db.commit()
@@ -586,6 +612,7 @@ class ProjectService:
                 session_id=project.chat_session_id or None,
                 user_role=payload.user_role,
                 top_k=payload.top_k,
+                task_mode="procurement_fit_review",
             ),
             current_user=UserProfileRead(
                 id=f"project-{payload.user_role}",
@@ -760,8 +787,13 @@ class ProjectService:
             contact_phone=payload.contact_phone.strip(),
             profile_summary=payload.profile_summary.strip(),
             procurement_notes=payload.procurement_notes.strip(),
+            handles_company_data=bool(payload.handles_company_data),
+            requires_system_integration=bool(payload.requires_system_integration),
+            quoted_amount=float(payload.quoted_amount or 0),
         )
         existing_materials = self._materials_from_reads(existing_session.extracted_materials) if existing_session is not None else []
+        if not existing_materials:
+            existing_materials = self._build_procurement_form_materials(project, draft)
         material_gate, requirement_checks, supplier_dossier = self._prepare_procurement_review_inputs(
             project=project,
             materials=existing_materials,
@@ -803,6 +835,37 @@ class ProjectService:
             requirement_checks=self._serialize_requirement_checks(requirement_checks),
             supplier_dossier=self._serialize_supplier_dossier(supplier_dossier),
         )
+
+    def _build_procurement_form_materials(
+        self,
+        project: ProcurementProject,
+        draft: ProcurementAgentVendorDraft,
+    ) -> list[ProcurementMaterialText]:
+        lines = [
+            f"供应商名称：{draft.vendor_name or '未提供'}",
+            f"来源平台：{draft.source_platform or '未提供'}",
+            f"官网或公开来源：{draft.source_url or '未提供'}",
+            f"联系邮箱：{draft.contact_email or '未提供'}",
+            f"联系姓名：{draft.contact_name or '未提供'}",
+            f"联系电话：{draft.contact_phone or '未提供'}",
+            f"产品介绍：{draft.profile_summary or '未提供'}",
+            f"采购说明：{draft.procurement_notes or '未提供'}",
+            f"报价：{draft.quoted_amount:.2f} {project.currency}",
+            f"是否处理公司或客户数据：{'是' if draft.handles_company_data else '否'}",
+            f"是否需要系统对接：{'是' if draft.requires_system_integration else '否'}",
+        ]
+        if draft.handles_company_data:
+            lines.append("供应商将接触公司或客户业务数据，需要进一步确认数据边界。")
+        if draft.requires_system_integration:
+            lines.append("供应商需要与内部系统进行对接，后续需进一步确认接口与权限影响。")
+        text = "\n".join(lines).strip()
+        return [
+            ProcurementMaterialText(
+                name="structured_vendor_profile.txt",
+                source_type="form",
+                text=text,
+            )
+        ]
 
     def _parse_procurement_materials(
         self,
@@ -865,6 +928,9 @@ class ProjectService:
             contact_phone=draft.contact_phone,
             profile_summary=draft.profile_summary,
             procurement_notes=draft.procurement_notes,
+            handles_company_data=draft.handles_company_data,
+            requires_system_integration=draft.requires_system_integration,
+            quoted_amount=draft.quoted_amount,
         )
 
     def _serialize_procurement_materials(self, materials: list[ProcurementMaterialText]) -> list[ProcurementMaterialRead]:
@@ -1027,6 +1093,13 @@ class ProjectService:
                 supplier_dossier=supplier_dossier,
                 supplier_profile=supplier_profile,
             )
+            review = self._attach_procurement_precheck_evidence(
+                db,
+                review=review,
+                query=generated_query,
+                user_role=current_user.role,
+                top_k=top_k,
+            )
             blocked_draft = ProcurementAgentVendorDraft(
                 vendor_name=draft.vendor_name,
                 source_platform=draft.source_platform,
@@ -1036,6 +1109,9 @@ class ProjectService:
                 contact_phone=draft.contact_phone,
                 profile_summary=draft.profile_summary,
                 procurement_notes=draft.procurement_notes,
+                handles_company_data=draft.handles_company_data,
+                requires_system_integration=draft.requires_system_integration,
+                quoted_amount=draft.quoted_amount,
                 ai_recommendation=recommended_action,
             )
             assessment = self._build_procurement_agent_assessment(
@@ -1072,9 +1148,9 @@ class ProjectService:
                 session_id=None,
                 user_role=current_user.role,
                 top_k=max(1, min(int(top_k), 10)),
+                task_mode="procurement_fit_review",
                 tool_sequence=[
                     "retrieve_procurement_knowledge",
-                    "compare_procurement_evidence",
                 ],
             ),
             current_user=current_user,
@@ -1095,11 +1171,17 @@ class ProjectService:
             contact_phone=draft.contact_phone,
             profile_summary=draft.profile_summary,
             procurement_notes=draft.procurement_notes,
+            handles_company_data=draft.handles_company_data,
+            requires_system_integration=draft.requires_system_integration,
+            quoted_amount=draft.quoted_amount,
             ai_recommendation=self._derive_procurement_final_recommendation(
+                project=project,
+                draft=draft,
                 review=review,
                 material_gate=material_gate,
                 requirement_checks=requirement_checks,
                 supplier_dossier=supplier_dossier,
+                supplier_profile=supplier_profile,
             ),
         )
         assessment = self._build_procurement_agent_assessment(
@@ -1173,6 +1255,9 @@ class ProjectService:
             contact_phone=draft.contact_phone,
             profile_summary=draft.profile_summary,
             procurement_notes=draft.procurement_notes,
+            handles_company_data=draft.handles_company_data,
+            requires_system_integration=draft.requires_system_integration,
+            quoted_amount=draft.quoted_amount,
         )
         vendor.vendor_name = draft.vendor_name
         vendor.source_platform = draft.source_platform
@@ -1182,6 +1267,9 @@ class ProjectService:
         vendor.contact_phone = draft.contact_phone
         vendor.profile_summary = draft.profile_summary
         vendor.procurement_notes = draft.procurement_notes
+        vendor.handles_company_data = draft.handles_company_data
+        vendor.requires_system_integration = draft.requires_system_integration
+        vendor.quoted_amount = draft.quoted_amount
         vendor.ai_review_summary = review.answer
         vendor.ai_recommendation = assessment.recommendation
         vendor.ai_review_trace_id = review.trace_id
@@ -1300,7 +1388,13 @@ class ProjectService:
         self._require_stage(project, ProcurementStage.legal_review.value)
         selected_vendor = self._require_selected_vendor(db, project)
         self._ensure_legal_review_materials_ready(db, project, selected_vendor)
-        query = payload.query.strip() or self._build_default_legal_review_query(project, selected_vendor)
+        contract_comparison = self._build_uploaded_legal_contract_comparison(db, project=project, vendor=selected_vendor)
+        query = payload.query.strip() or self._build_default_legal_review_query(
+            db,
+            project,
+            selected_vendor,
+            contract_comparison=contract_comparison,
+        )
         review = self.agent_service.query(
             db,
             QueryRequest(
@@ -1308,6 +1402,7 @@ class ProjectService:
                 session_id=project.chat_session_id or None,
                 user_role=payload.user_role,
                 top_k=payload.top_k,
+                task_mode="legal_contract_review",
                 tool_sequence=[
                     "retrieve_legal_redlines",
                     "compare_legal_clauses",
@@ -1324,6 +1419,13 @@ class ProjectService:
         )
         self._ensure_review_trace_id(review)
         project.chat_session_id = review.session_id
+        review = self._attach_legal_contract_comparison(
+            db,
+            project=project,
+            vendor=selected_vendor,
+            review=review,
+            contract_comparison=contract_comparison,
+        )
         structured_review = self._build_legal_structured_review(project, selected_vendor, review)
         review = self._merge_legal_tool_trace(
             db,
@@ -1723,6 +1825,9 @@ class ProjectService:
                     contact_phone="",
                     profile_summary=project.summary,
                     procurement_notes="业务草稿更新时同步的初始候选供应商。",
+                    handles_company_data=bool(project.data_scope and project.data_scope != "none"),
+                    requires_system_integration=project.category in {"software", "customer-support-saas"},
+                    quoted_amount=float(project.budget_amount or 0),
                 )
             elif business_input_vendor.status in {
                 VendorCandidateStatus.candidate.value,
@@ -1988,14 +2093,192 @@ class ProjectService:
 
     def _build_default_legal_review_query(
         self,
+        db: Session,
         project: ProcurementProject,
         vendor: VendorCandidate,
+        *,
+        contract_comparison: dict[str, object] | None = None,
     ) -> str:
         vendor_name = vendor.vendor_name.strip() or "当前供应商"
-        return (
-            f"{self.LEGAL_DEFAULT_REVIEW_QUERY} 当前项目：{project.title}。"
-            f" 供应商：{vendor_name}。请优先判断是否建议通过或退回采购。"
+        artifacts = self.repository.list_artifacts(db, project.id)
+        our_artifact = self._artifact_for_vendor(
+            artifacts,
+            ProcurementStage.legal_review.value,
+            self.LEGAL_OUR_CONTRACT_ARTIFACT_TYPES,
+            vendor.id,
         )
+        counterparty_artifact = self._artifact_for_vendor(
+            artifacts,
+            ProcurementStage.legal_review.value,
+            self.LEGAL_COUNTERPARTY_CONTRACT_ARTIFACT_TYPES,
+            vendor.id,
+        )
+        our_title = self._legal_artifact_document_title(db, our_artifact, fallback_title="我方采购合同")
+        counterparty_title = self._legal_artifact_document_title(db, counterparty_artifact, fallback_title="对方修改后的采购合同")
+        compact_differences = self._legal_compact_difference_summary(contract_comparison or {})
+        semantic_differences = self._legal_semantic_difference_summary(contract_comparison or {})
+        key_snippets = self._legal_compact_evidence_summary(contract_comparison or {})
+        retrieval_topics = self._legal_retrieval_topics(contract_comparison or {})
+        project_context = self._legal_project_context_summary(project)
+        lines = [
+            "法务合同红线审查",
+            f"项目={project.title}",
+            f"供应商={vendor_name}",
+            f"我方合同={our_title}",
+            f"对方合同={counterparty_title}",
+            f"业务场景={project_context}",
+            f"差异摘要={compact_differences or '未识别到明确缺失或弱化条款，按核心红线复核'}",
+        ]
+        if semantic_differences:
+            lines.append(f"差异描述={semantic_differences}")
+        if key_snippets:
+            lines.append(f"合同片段={key_snippets}")
+        lines.extend(
+            [
+                f"检索主题={retrieval_topics}",
+                "审查关注=需要判断这些改动是否突破公司在赔付边界、监督核查、数据控制、服务承诺、付款安排或争议处理上的底线",
+                "输出要求=结合合同差异和制度依据，给出风险原因、引用依据、建议动作；仅作为法务辅助审查，不替代最终法律意见",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _legal_project_context_summary(self, project: ProcurementProject) -> str:
+        parts: list[str] = []
+        if project.summary:
+            parts.append(project.summary.strip())
+        data_scope_label = self._legal_data_scope_label(project.data_scope)
+        if data_scope_label:
+            parts.append(data_scope_label)
+        budget_label = self._legal_budget_label(project.budget_amount)
+        if budget_label:
+            parts.append(budget_label)
+        if project.category:
+            parts.append(f"采购类型为{project.category}")
+        if project.business_value:
+            parts.append(project.business_value.strip())
+        return "；".join(list(dict.fromkeys(part for part in parts if part))[:5])
+
+    @staticmethod
+    def _legal_data_scope_label(data_scope: str) -> str:
+        normalized = (data_scope or "").strip().lower()
+        mapping = {
+            "none": "当前项目原则上不涉及正式客户或生产业务数据",
+            "customer_data": "项目会涉及客户服务记录、工单内容或相关业务数据",
+            "employee_data": "项目会涉及员工或内部运营数据",
+            "customer_support_data": "项目会涉及客服会话、工单附件和服务记录",
+            "cross_border_customer_data": "项目会涉及跨境流转的客户服务或业务数据",
+            "migration_data": "项目包含历史业务数据迁移和过渡期处理安排",
+        }
+        if not normalized:
+            return ""
+        return mapping.get(normalized, f"项目数据范围为{data_scope}")
+
+    @staticmethod
+    def _legal_budget_label(budget_amount: float | int | None) -> str:
+        amount = float(budget_amount or 0)
+        if amount <= 0:
+            return ""
+        if amount <= 50000:
+            return "预算规模较小，属于试运行或轻量验证级别"
+        if amount <= 300000:
+            return "预算规模中等，需要兼顾交付效率与合同风险"
+        return "预算规模较大，按正式采购和标准红线审查"
+
+    def _legal_compact_difference_summary(self, comparison_view: dict[str, object]) -> str:
+        entries: list[str] = []
+        for label, key in (("缺失", "strict_missing_clauses"), ("弱化", "weakened_clauses")):
+            clauses_by_doc = comparison_view.get(key, {})
+            if not isinstance(clauses_by_doc, dict):
+                continue
+            for clauses in clauses_by_doc.values():
+                if not isinstance(clauses, list):
+                    continue
+                for clause in clauses[:6]:
+                    clause_name = str(clause).strip()
+                    if clause_name:
+                        entries.append(f"{clause_name}{label}")
+        return "；".join(list(dict.fromkeys(entries))[:8])
+
+    def _legal_semantic_difference_summary(self, comparison_view: dict[str, object]) -> str:
+        entries: list[str] = []
+        for label, key in (("缺失", "strict_missing_clauses"), ("弱化", "weakened_clauses")):
+            clauses_by_doc = comparison_view.get(key, {})
+            if not isinstance(clauses_by_doc, dict):
+                continue
+            for clauses in clauses_by_doc.values():
+                if not isinstance(clauses, list):
+                    continue
+                for clause in clauses[:6]:
+                    clause_name = str(clause).strip()
+                    concern = self.LEGAL_CONCERN_DESCRIPTIONS.get(clause_name, clause_name)
+                    if not concern:
+                        continue
+                    if label == "缺失":
+                        entries.append(f"对方版本没有保留“{concern}”相关约束")
+                    else:
+                        entries.append(f"对方版本在“{concern}”方面做了更宽松的修改")
+        return "；".join(list(dict.fromkeys(entries))[:6])
+
+    def _legal_compact_evidence_summary(self, comparison_view: dict[str, object]) -> str:
+        snippets: list[str] = []
+        clause_evidence = comparison_view.get("clause_evidence", {})
+        if not isinstance(clause_evidence, dict):
+            return ""
+        for clause_name, doc_map in clause_evidence.items():
+            if not isinstance(doc_map, dict):
+                continue
+            for snippet in doc_map.values():
+                text = re.sub(r"\s+", " ", str(snippet).strip())
+                if not text:
+                    continue
+                snippets.append(text[:70])
+                break
+        return " | ".join(list(dict.fromkeys(snippets))[:4])
+
+    def _legal_retrieval_topics(self, comparison_view: dict[str, object]) -> str:
+        topics = ["云服务合同底线", "标准模板要求", "供应商回传修改处理"]
+        focus_clauses = self._legal_focus_clauses(comparison_view)
+        clause_topic_map = {
+            "数据处理": "数据与安全边界",
+            "安全事件通知": "事故响应与通知时效",
+            "保密义务": "保密信息使用边界",
+            "争议解决与适用法律": "争议处理与适用法律",
+            "付款条款": "付款节奏与商业合理性",
+            "服务水平": "服务承诺与违约责任",
+            "审计权": "监督核查与证据配合",
+            "责任上限": "责任承担范围",
+            "赔偿责任": "违约或侵权后的赔付安排",
+            "便利终止": "退出机制与提前解约",
+        }
+        for clause in focus_clauses:
+            mapped = clause_topic_map.get(clause)
+            if mapped:
+                topics.append(mapped)
+        return "、".join(list(dict.fromkeys(topics))[:6])
+
+    def _legal_focus_clauses(self, comparison_view: dict[str, object]) -> list[str]:
+        clauses: list[str] = []
+        for key in ("blocking_clauses", "watch_clauses", "strict_missing_clauses", "weakened_clauses"):
+            clauses_by_doc = comparison_view.get(key, {})
+            if not isinstance(clauses_by_doc, dict):
+                continue
+            for values in clauses_by_doc.values():
+                if not isinstance(values, list):
+                    continue
+                clauses.extend(str(item).strip() for item in values if str(item).strip())
+        return list(dict.fromkeys(clauses))
+
+    def _legal_artifact_document_title(
+        self,
+        db: Session,
+        artifact: ProjectArtifact | None,
+        *,
+        fallback_title: str,
+    ) -> str:
+        if artifact is None or not artifact.document_id:
+            return fallback_title
+        document = db.get(Document, artifact.document_id)
+        return document.title if document else artifact.title or fallback_title
 
     def _collect_legal_material_blockers(
         self,
@@ -2203,9 +2486,13 @@ class ProjectService:
             "unclear_subprocessor_arrangements": "Subprocessor or outsourcing arrangements are mentioned but not clearly explained.",
             "manual_follow_up_required": "Evidence is not strong enough for automatic progression and needs manual review.",
         }
+        if re.search(r"[\u4e00-\u9fff]", flag):
+            return flag
         return mapping.get(flag, f"Review flagged risk: {flag.replace('_', ' ')}.")
 
     def _risk_severity_from_flag(self, flag: str) -> str:
+        if re.search(r"(缺少|弱化|红线|责任上限|数据处理|审计权)", flag):
+            return "high"
         if flag in {"missing_audit_rights", "missing_data_processing_terms", "liability_cap_weakened", "unknown_data_residency"}:
             return "high"
         if flag in {"missing_security_incident_notice", "manual_follow_up_required", "unclear_subprocessor_arrangements"}:
@@ -2576,15 +2863,16 @@ class ProjectService:
     def _validate_procurement_agent_draft(self, draft: ProcurementAgentVendorDraft) -> None:
         if not draft.vendor_name.strip():
             raise ValueError("Vendor name is required for procurement agent review.")
-        if not any(
-            [
-                draft.source_platform.strip(),
-                draft.source_url.strip(),
-                draft.profile_summary.strip(),
-                draft.procurement_notes.strip(),
-            ]
-        ):
-            raise ValueError("Procurement review requires at least one source or summary field.")
+        if not draft.source_url.strip():
+            raise ValueError("Public source URL is required for procurement agent review.")
+        if not draft.contact_email.strip():
+            raise ValueError("Supplier contact email is required for procurement agent review.")
+        if draft.quoted_amount <= 0:
+            raise ValueError("Quoted amount is required for procurement agent review.")
+        if len(draft.profile_summary.strip()) < 10:
+            raise ValueError("Vendor profile summary must be at least 10 characters.")
+        if len(draft.procurement_notes.strip()) < 10:
+            raise ValueError("Procurement notes must be at least 10 characters.")
 
     def _classify_material_types(self, material: ProcurementMaterialText) -> tuple[str, ...]:
         text = f"{material.name}\n{material.text}".lower()
@@ -2715,6 +3003,7 @@ class ProjectService:
         return any(
             domain in host
             for domain in [
+                "social.example.com",
                 "douyin.com",
                 "xiaohongshu.com",
                 "xhslink.com",
@@ -2766,11 +3055,47 @@ class ProjectService:
         normalized = re.sub(r"\s+", " ", (vendor_name or "")).strip().lower()
         if len(normalized) < 3:
             return True
+        if normalized in {
+            "待确认供应商",
+            "未确认供应商",
+            "未知供应商",
+            "待定供应商",
+            "tbd",
+            "unknown",
+            "unknown vendor",
+        }:
+            return True
         if re.fullmatch(r"(page|document|scan|image|screenshot|file)[\s_-]*\d*", normalized):
             return True
         return any(
             token in normalized
-            for token in ["报价", "白皮书", "合同", "协议", "paper", "report", "附件", "扫描件", "截图"]
+            for token in ["待确认", "未确认", "未知", "报价", "白皮书", "合同", "协议", "paper", "report", "附件", "扫描件", "截图"]
+        )
+
+    def _looks_like_unreliable_source_platform(self, source_platform: str) -> bool:
+        normalized = re.sub(r"\s+", "", (source_platform or "").strip().lower())
+        if not normalized:
+            return False
+        return any(
+            token in normalized
+            for token in [
+                "社交平台",
+                "朋友圈",
+                "短视频",
+                "小红书",
+                "抖音",
+                "微博",
+                "公众号",
+                "微信",
+                "转发",
+                "转载",
+                "合作伙伴转发",
+                "social",
+                "wechat",
+                "weibo",
+                "douyin",
+                "xhs",
+            ]
         )
 
     def _evaluate_procurement_material_gate(
@@ -2829,8 +3154,14 @@ class ProjectService:
             blocking_reasons.append("上传内容看起来不像供应商准入材料，未识别到主体材料、官网来源或产品服务说明。")
         if academic_count == len(materials):
             blocking_reasons.append("上传内容更像论文或研究资料，不能作为供应商准入依据。")
+        if self._looks_like_unreliable_source_platform(draft.source_platform) or (
+            draft.source_url and self._looks_like_social_source(draft.source_url)
+        ):
+            blocking_reasons.append("当前来源平台更像社交平台、转发渠道或不可追溯来源，建议补充官网或正式公开来源。")
         if social_only_count == len(materials) and not valid_source_urls:
             blocking_reasons.append("当前仅识别到社交平台或不可追溯来源，不能单独作为准入依据。")
+        if vendor_name.strip() and not vendor_name_valid:
+            blocking_reasons.append("无法确认供应商主体身份，当前供应商名称像占位信息或待确认名称。")
         if not subject_evidence:
             blocking_reasons.append("无法确认供应商主体身份，缺少主体信息或可追溯公开来源。")
         if not capability_evidence:
@@ -2883,6 +3214,8 @@ class ProjectService:
 
         if any(token in lowered for token in ["saas", "cloud", "hosting", "multi-tenant"]):
             service_model = "software_saas"
+        elif draft.requires_system_integration:
+            service_model = "software_platform"
         elif any(token in lowered for token in ["api", "platform", "integration", "sdk"]):
             service_model = "software_platform"
         else:
@@ -2890,6 +3223,8 @@ class ProjectService:
 
         if project.data_scope and project.data_scope != "none":
             data_access_level = project.data_scope
+        elif draft.handles_company_data:
+            data_access_level = "customer_data"
         elif any(token in lowered for token in ["personal information", "personal data", "customer data", "data processing", "api", "saas", "login", "account"]):
             data_access_level = "customer_data"
         else:
@@ -2908,7 +3243,7 @@ class ProjectService:
                 hosting_region = label
                 break
 
-        subprocessor_signal = "mentioned" if any(token in lowered for token in ["subprocessor", "subprocessors", "third-party processor", "outsourced processing"]) else "not_mentioned"
+        subprocessor_signal = "mentioned" if any(token in lowered for token in ["subprocessor", "subprocessors", "third-party processor", "outsourced processing"]) or draft.requires_system_integration else "not_mentioned"
 
         security_signal_summary: list[str] = []
         if supplier_profile:
@@ -3004,10 +3339,7 @@ class ProjectService:
             ProcurementRequirementCheck(
                 key="service_capability",
                 label="产品/服务说明",
-                status="pass"
-                if bool(draft.profile_summary.strip())
-                and bool(evidence_titles(lambda _n, kinds: "product_service" in kinds or "commercial" in kinds))
-                else "missing",
+                status="pass" if bool(draft.profile_summary.strip()) else "missing",
                 evidence_titles=evidence_titles(lambda _n, kinds: "product_service" in kinds or "commercial" in kinds),
                 detail="需要能说明软件/SaaS 产品能力、服务范围或报价方案的材料。",
             )
@@ -3028,6 +3360,22 @@ class ProjectService:
                 status="pass" if bool(project.summary.strip() or draft.procurement_notes.strip()) else "missing",
                 evidence_titles=evidence_titles(lambda _n, kinds: "commercial" in kinds),
                 detail="需要说明为何采购该供应商、业务场景和采购背景。",
+            )
+        )
+        checks.append(
+            ProcurementRequirementCheck(
+                key="supplier_contact_email",
+                label="供应商联系邮箱",
+                status="pass" if bool(draft.contact_email.strip()) else "missing",
+                detail="后续法务发送合同与跟进沟通至少需要一个可用的供应商联系邮箱。",
+            )
+        )
+        checks.append(
+            ProcurementRequirementCheck(
+                key="commercial_quote",
+                label="报价或预计合作金额",
+                status="pass" if draft.quoted_amount > 0 else "missing",
+                detail="需要提供报价或预计合作金额，用于判断商务可行性和预算匹配度。",
             )
         )
 
@@ -3219,6 +3567,53 @@ class ProjectService:
         review.debug_summary = debug_summary
         return review
 
+    def _attach_procurement_precheck_evidence(
+        self,
+        db: Session,
+        *,
+        review: QueryResponse,
+        query: str,
+        user_role: str,
+        top_k: int,
+    ) -> QueryResponse:
+        plan = self.agent_service.llm_client.build_retrieval_plan(
+            query,
+            "procurement_fit_review",
+            max(1, min(int(top_k), 10)),
+        )
+        document_hints = list(plan.get("document_hints", []))
+        for hint in ("供应商准入", "供应商背景核验", "可追溯公开来源", "主体信息", "常见问答"):
+            if hint not in document_hints:
+                document_hints.append(hint)
+        plan["document_hints"] = document_hints
+
+        retrieved, retrieval_debug = self.agent_service.retrieval_service.retrieve(
+            db,
+            query=query,
+            user_role=user_role,
+            top_k=max(1, min(int(top_k), 10)),
+            plan=plan,
+        )
+        citations = self.agent_service.retrieval_service.to_citations(retrieved)
+        retrieval_trace = self._build_tool_call_read(
+            tool_name="retrieve_procurement_knowledge",
+            purpose="预检未通过时仍召回采购制度依据，供采购查看风险原因和补充方向。",
+            status="success" if citations else "warn",
+            input_summary=f"query={query[:80]} top_k={plan.get('top_k')}",
+            output_summary=f"召回 {len(retrieved)} 个片段，生成 {len(citations)} 条引用",
+        )
+
+        merged_trace = [*list(review.tool_calls or []), retrieval_trace]
+        debug_summary = dict(review.debug_summary or {})
+        debug_summary["retrieval_plan"] = plan
+        debug_summary["retrieval"] = retrieval_debug
+        debug_summary["tool_calls"] = [item.model_dump() for item in merged_trace]
+        debug_summary["procurement_tool_trace"] = [item.model_dump() for item in merged_trace]
+        review.citations = citations
+        review.tool_calls = merged_trace
+        review.debug_summary = debug_summary
+        return review
+
     def _finalize_procurement_tool_trace(
         self,
         review: QueryResponse,
@@ -3321,6 +3716,369 @@ class ProjectService:
         review.debug_summary = debug_summary
         return review
 
+    def _attach_legal_contract_comparison(
+        self,
+        db: Session,
+        *,
+        project: ProcurementProject,
+        vendor: VendorCandidate,
+        review: QueryResponse,
+        contract_comparison: dict[str, object] | None = None,
+    ) -> QueryResponse:
+        artifacts = self.repository.list_artifacts(db, project.id)
+        our_artifact = self._artifact_for_vendor(
+            artifacts,
+            ProcurementStage.legal_review.value,
+            self.LEGAL_OUR_CONTRACT_ARTIFACT_TYPES,
+            vendor.id,
+        )
+        counterparty_artifact = self._artifact_for_vendor(
+            artifacts,
+            ProcurementStage.legal_review.value,
+            self.LEGAL_COUNTERPARTY_CONTRACT_ARTIFACT_TYPES,
+            vendor.id,
+        )
+        if not our_artifact or not counterparty_artifact or not our_artifact.document_id or not counterparty_artifact.document_id:
+            return review
+
+        document_ids = [our_artifact.document_id, counterparty_artifact.document_id]
+        sections = self.agent_service.retrieval_service.fetch_document_sections(db, document_ids=document_ids)
+        if not sections:
+            return review
+
+        our_title = self._legal_artifact_document_title(db, our_artifact, fallback_title="我方采购合同")
+        counterparty_title = self._legal_artifact_document_title(db, counterparty_artifact, fallback_title="对方修改后的采购合同")
+        comparison_view = contract_comparison or self._compare_uploaded_legal_contracts(
+            sections=sections,
+            our_document_id=our_artifact.document_id,
+            counterparty_document_id=counterparty_artifact.document_id,
+            our_title=our_title,
+            counterparty_title=counterparty_title,
+        )
+
+        debug_summary = dict(review.debug_summary or {})
+        previous_comparison = debug_summary.get("comparison_view", {})
+        if previous_comparison:
+            debug_summary["retrieval_comparison_view"] = previous_comparison
+            retrieval_flags = [str(item) for item in debug_summary.get("risk_flags", [])]
+            if retrieval_flags:
+                debug_summary["retrieval_risk_flags"] = retrieval_flags
+        debug_summary["comparison_view"] = comparison_view
+        debug_summary["legal_contract_documents"] = {
+            "our_contract": our_title,
+            "counterparty_contract": counterparty_title,
+        }
+        contract_flags = [str(item) for item in comparison_view.get("risk_flags", [])]
+        debug_summary["risk_flags"] = list(dict.fromkeys(contract_flags))
+        debug_summary["legal_contract_comparison_source"] = "uploaded_project_artifacts"
+
+        existing_citation_keys = {(citation.document_id, citation.location) for citation in review.citations or []}
+        contract_citations: list[Citation] = []
+        for chunk in sections:
+            if chunk.document_id not in set(document_ids):
+                continue
+            citation_key = (chunk.document_id, chunk.location)
+            if citation_key in existing_citation_keys:
+                continue
+            contract_citations.append(
+                Citation(
+                    document_id=chunk.document_id,
+                    document_title=chunk.document_title,
+                    location=chunk.location,
+                    snippet=chunk.content[:220],
+                    score=1.0,
+                    score_breakdown={"contract_compare": 1.0},
+                )
+            )
+            existing_citation_keys.add(citation_key)
+            if len(contract_citations) >= 4:
+                break
+
+        review.citations = [*contract_citations, *list(review.citations or [])][:8]
+        review.debug_summary = debug_summary
+        review.answer = self._build_legal_contract_final_answer(
+            base_answer=review.answer,
+            comparison_view=comparison_view,
+            citations=review.citations,
+        )
+        if comparison_view.get("risk_flags"):
+            review.next_action = "answer"
+        return review
+
+    def _build_uploaded_legal_contract_comparison(
+        self,
+        db: Session,
+        *,
+        project: ProcurementProject,
+        vendor: VendorCandidate,
+    ) -> dict[str, object]:
+        artifacts = self.repository.list_artifacts(db, project.id)
+        our_artifact = self._artifact_for_vendor(
+            artifacts,
+            ProcurementStage.legal_review.value,
+            self.LEGAL_OUR_CONTRACT_ARTIFACT_TYPES,
+            vendor.id,
+        )
+        counterparty_artifact = self._artifact_for_vendor(
+            artifacts,
+            ProcurementStage.legal_review.value,
+            self.LEGAL_COUNTERPARTY_CONTRACT_ARTIFACT_TYPES,
+            vendor.id,
+        )
+        if not our_artifact or not counterparty_artifact or not our_artifact.document_id or not counterparty_artifact.document_id:
+            return {}
+        sections = self.agent_service.retrieval_service.fetch_document_sections(
+            db,
+            document_ids=[our_artifact.document_id, counterparty_artifact.document_id],
+        )
+        if not sections:
+            return {}
+        return self._compare_uploaded_legal_contracts(
+            sections=sections,
+            our_document_id=our_artifact.document_id,
+            counterparty_document_id=counterparty_artifact.document_id,
+            our_title=self._legal_artifact_document_title(db, our_artifact, fallback_title="我方采购合同"),
+            counterparty_title=self._legal_artifact_document_title(db, counterparty_artifact, fallback_title="对方修改后的采购合同"),
+        )
+
+    def _legal_comparison_query_lines(self, comparison_view: dict[str, object]) -> list[str]:
+        lines: list[str] = []
+        strict_missing = comparison_view.get("strict_missing_clauses", {})
+        weakened = comparison_view.get("weakened_clauses", {})
+        clause_evidence = comparison_view.get("clause_evidence", {})
+        if isinstance(strict_missing, dict):
+            for doc_title, clauses in list(strict_missing.items())[:2]:
+                for clause in list(clauses)[:4]:
+                    lines.append(f"- {doc_title} 缺失「{clause}」，需要查询该条款是否属于法务红线。")
+        if isinstance(weakened, dict):
+            for doc_title, clauses in list(weakened.items())[:2]:
+                for clause in list(clauses)[:4]:
+                    evidence = ""
+                    if isinstance(clause_evidence, dict):
+                        detail = clause_evidence.get(clause, {})
+                        if isinstance(detail, dict):
+                            evidence = str(detail.get(doc_title, ""))[:120]
+                    suffix = f" 对方条款片段：{evidence}" if evidence else ""
+                    lines.append(f"- {doc_title} 弱化「{clause}」，需要查询企业合同红线和处理建议。{suffix}")
+        return lines[:8]
+
+    def _build_legal_contract_final_answer(
+        self,
+        *,
+        base_answer: str,
+        comparison_view: dict[str, object],
+        citations: list[Citation],
+    ) -> str:
+        difference_lines = self._legal_comparison_query_lines(comparison_view)
+        risk_flags = [str(item) for item in comparison_view.get("risk_flags", [])]
+        watch_lines: list[str] = []
+        watch_clauses = comparison_view.get("watch_clauses", {})
+        if isinstance(watch_clauses, dict):
+            for doc_title, clauses in list(watch_clauses.items())[:2]:
+                if clauses:
+                    watch_lines.append(f"- {doc_title} 还存在观察项：{', '.join(list(clauses)[:4])}")
+        if not difference_lines and not risk_flags:
+            return base_answer
+        citation_titles = list(dict.fromkeys(citation.document_title for citation in citations))
+        lines = ["合同差异驱动审查结果："]
+        if difference_lines:
+            lines.append("识别到的关键差异：")
+            lines.extend(difference_lines[:5])
+        if risk_flags:
+            lines.append("风险判断：")
+            lines.extend(f"- {item}" for item in risk_flags[:5])
+        if watch_lines:
+            lines.append("补充观察项：")
+            lines.extend(watch_lines[:3])
+        if citation_titles:
+            lines.append(f"已结合知识库依据：{'、'.join(citation_titles[:5])}。")
+        lines.append("建议动作：优先要求对方恢复被删除或弱化的核心红线条款；如对方坚持修改，应由法务人工确认是否接受该偏离。")
+        if base_answer:
+            lines.extend(["", "RAG 召回依据摘要：", base_answer])
+        return "\n".join(lines)
+
+    def _compare_uploaded_legal_contracts(
+        self,
+        *,
+        sections: list,
+        our_document_id: str,
+        counterparty_document_id: str,
+        our_title: str,
+        counterparty_title: str,
+    ) -> dict[str, object]:
+        our_text = "\n".join(chunk.content for chunk in sections if chunk.document_id == our_document_id)
+        counterparty_text = "\n".join(chunk.content for chunk in sections if chunk.document_id == counterparty_document_id)
+        clause_matrix: dict[str, dict[str, str]] = {}
+        missing_clauses: dict[str, list[str]] = {counterparty_title: []}
+        weakened_clauses: dict[str, list[str]] = {counterparty_title: []}
+        blocking_clauses: dict[str, list[str]] = {counterparty_title: []}
+        watch_clauses: dict[str, list[str]] = {counterparty_title: []}
+        clause_evidence: dict[str, dict[str, str]] = {}
+        risk_flags: list[str] = []
+
+        for rule in self._legal_clause_rules():
+            clause_name = rule["name"]
+            patterns = list(rule["patterns"])
+            weak_patterns = list(rule.get("weak_patterns", []))
+            our_snippet = self._find_clause_snippet(our_text, patterns)
+            counterparty_snippet = self._find_clause_snippet(counterparty_text, patterns)
+            our_status = "存在" if our_snippet else "缺失"
+            if not counterparty_snippet:
+                counterparty_status = "缺失"
+            elif self._has_weak_clause_signal(counterparty_snippet, weak_patterns):
+                counterparty_status = "弱化"
+            else:
+                counterparty_status = "存在"
+
+            if our_status == "缺失" and counterparty_status == "缺失":
+                continue
+
+            clause_matrix[clause_name] = {
+                our_title: our_status,
+                counterparty_title: counterparty_status,
+            }
+            clause_evidence[clause_name] = {
+                our_title: our_snippet[:180],
+                counterparty_title: counterparty_snippet[:180],
+            }
+            if counterparty_status == "缺失":
+                missing_clauses[counterparty_title].append(clause_name)
+                if rule.get("critical", True):
+                    blocking_clauses[counterparty_title].append(clause_name)
+                    risk_flags.append(f"{counterparty_title} 缺少「{clause_name}」红线条款，建议退回采购补充或要求对方恢复。")
+                else:
+                    watch_clauses[counterparty_title].append(clause_name)
+            elif counterparty_status == "弱化":
+                weakened_clauses[counterparty_title].append(clause_name)
+                if rule.get("critical", True):
+                    blocking_clauses[counterparty_title].append(clause_name)
+                    risk_flags.append(f"{counterparty_title} 弱化「{clause_name}」条款，建议法务重点复核。")
+                else:
+                    watch_clauses[counterparty_title].append(clause_name)
+
+        missing_clauses = {title: clauses for title, clauses in missing_clauses.items() if clauses}
+        weakened_clauses = {title: clauses for title, clauses in weakened_clauses.items() if clauses}
+        blocking_clauses = {title: clauses for title, clauses in blocking_clauses.items() if clauses}
+        watch_clauses = {title: clauses for title, clauses in watch_clauses.items() if clauses}
+        combined_gaps: dict[str, list[str]] = {}
+        for title in set(missing_clauses) | set(weakened_clauses):
+            combined_gaps[title] = list(dict.fromkeys([*missing_clauses.get(title, []), *weakened_clauses.get(title, [])]))
+
+        return {
+            "documents": {
+                our_title: [our_text[:180]],
+                counterparty_title: [counterparty_text[:180]],
+            },
+            "clause_matrix": clause_matrix,
+            "missing_clauses": combined_gaps,
+            "strict_missing_clauses": missing_clauses,
+            "weakened_clauses": weakened_clauses,
+            "blocking_clauses": blocking_clauses,
+            "watch_clauses": watch_clauses,
+            "clause_evidence": clause_evidence,
+            "risk_flags": list(dict.fromkeys(risk_flags)),
+        }
+
+    @staticmethod
+    def _legal_clause_rules() -> list[dict[str, object]]:
+        return [
+            {
+                "name": "责任上限",
+                "patterns": ["责任上限", "赔偿上限", "liability cap", "limitation of liability"],
+                "weak_patterns": ["三个月", "3个月", "不超过三个月", "不超过3个月", "仅限", "不超过.*服务费"],
+                "critical": True,
+            },
+            {
+                "name": "赔偿责任",
+                "patterns": ["赔偿", "违约责任", "indemnity", "indemnification"],
+                "weak_patterns": ["不承担赔偿", "仅退还费用", "间接损失免责", "排除.*赔偿"],
+                "critical": True,
+            },
+            {
+                "name": "审计权",
+                "patterns": ["审计权", "审计", "审计证明", "audit right", "audit rights"],
+                "weak_patterns": ["不接受审计", "不接受.*审计", "不得审计", "仅提供自评", "仅提供.*自评", "无需提供"],
+                "critical": True,
+            },
+            {
+                "name": "数据处理",
+                "patterns": ["数据处理", "个人信息", "处理目的", "跨境传输", "data processing", "dpa"],
+                "weak_patterns": ["自行安排分包", "关联部署地点", "运营需要", "改变处理目的", "可.*跨境", "可.*传输"],
+                "critical": True,
+            },
+            {
+                "name": "保密义务",
+                "patterns": ["保密义务", "保密信息", "confidential", "confidentiality"],
+                "weak_patterns": ["无需承担保密义务", "仅尽合理努力", "可向第三方披露", "保密期限.*终止"],
+                "critical": True,
+            },
+            {
+                "name": "安全事件通知",
+                "patterns": ["安全事件", "通知时限", "二十四小时", "24小时", "breach notice", "security incident"],
+                "weak_patterns": ["合理可行", "尽快通知", "不承诺", "无固定", "不保证"],
+                "critical": True,
+            },
+            {
+                "name": "分包限制",
+                "patterns": ["分包", "转包", "子处理", "subcontractor", "sub-processor"],
+                "weak_patterns": ["自行安排分包", "无需同意", "可.*分包", "自行.*转包"],
+                "critical": True,
+            },
+            {
+                "name": "便利终止",
+                "patterns": ["便利终止", "无因终止", "解除合同", "termination for convenience"],
+                "weak_patterns": ["不得无故终止", "不接受便利终止", "只能.*违约.*终止", "不得提前解除合同", "除非.*违约.*解除合同"],
+                "critical": True,
+            },
+            {
+                "name": "付款条款",
+                "patterns": ["付款", "发票", "payment terms", "invoice", "net 45"],
+                "weak_patterns": ["预付款", "立即付款", "逾期.*高额", "四十五日", "45日"],
+                "critical": False,
+            },
+            {
+                "name": "服务水平",
+                "patterns": ["服务水平", "服务赔偿", "SLA", "service level", "service credit"],
+                "weak_patterns": ["不承诺.*服务水平", "不提供.*赔偿", "仅尽力"],
+                "critical": False,
+            },
+            {
+                "name": "争议解决与适用法律",
+                "patterns": ["争议解决", "适用法律", "管辖法院", "governing law", "jurisdiction"],
+                "weak_patterns": ["供应商所在地法院", "适用境外法律", "境外仲裁", "单方选择管辖"],
+                "critical": False,
+            },
+        ]
+
+    @staticmethod
+    def _find_clause_snippet(text: str, patterns: list[str]) -> str:
+        normalized = text or ""
+        for pattern in patterns:
+            lowered_text = normalized.lower()
+            lowered_pattern = pattern.lower()
+            index = lowered_text.find(lowered_pattern)
+            if index < 0:
+                continue
+            start = max(0, index - 80)
+            end = min(len(normalized), index + len(pattern) + 180)
+            return re.sub(r"\s+", " ", normalized[start:end]).strip()
+        return ""
+
+    @staticmethod
+    def _has_weak_clause_signal(snippet: str, weak_patterns: list[str]) -> bool:
+        for pattern in weak_patterns:
+            if ".*" not in pattern:
+                if pattern.lower() in snippet.lower():
+                    return True
+                continue
+            try:
+                if re.search(pattern, snippet, re.IGNORECASE):
+                    return True
+            except re.error:
+                if pattern.lower().replace(".*", "") in snippet.lower():
+                    return True
+        return False
+
     def _build_procurement_precheck_review(
         self,
         *,
@@ -3384,7 +4142,8 @@ class ProjectService:
             confidence=0.0,
             trace_id=str(uuid.uuid4()),
             next_action="collect_materials",
-            intent="procurement_review",
+            intent="procurement_fit_review",
+            task_mode="procurement_fit_review",
             tool_calls=precheck_trace,
             debug_summary=debug_summary,
         )
@@ -3404,65 +4163,200 @@ class ProjectService:
             for check in list(requirement_checks or [])
             if check.required and check.status != "pass"
         ]
+        risk_signals: list[str] = []
+        if draft.handles_company_data:
+            risk_signals.append("是否处理公司/客户数据：是")
+        else:
+            risk_signals.append("是否处理公司/客户数据：否")
+        if draft.requires_system_integration:
+            risk_signals.append("是否需要系统对接：是")
+        else:
+            risk_signals.append("是否需要系统对接：否")
+        if dossier.data_access_level not in {"unknown", "none", ""}:
+            risk_signals.append(f"涉及数据处理：{dossier.data_access_level}")
+        if dossier.hosting_region:
+            risk_signals.append(f"数据存储地点：{dossier.hosting_region}")
+        else:
+            risk_signals.append("数据存储地点未说明")
+        if dossier.subprocessor_signal not in {"", "unknown", "none"}:
+            risk_signals.append(f"分包情况：{dossier.subprocessor_signal}")
+        if dossier.security_signal_summary:
+            risk_signals.append(f"安全信号：{', '.join(dossier.security_signal_summary[:3])}")
+        elif supplier_profile and supplier_profile.security_signals:
+            risk_signals.append(f"安全信号：{', '.join(supplier_profile.security_signals[:3])}")
+
+        retrieval_focus = ["供应商准入", "供应商背景核验", "采购制度依据"]
+        if draft.handles_company_data or dossier.data_access_level not in {"unknown", "none", ""}:
+            retrieval_focus.extend(["第三方数据处理", "安全评审", "数据处理说明", "隐私DPA材料"])
+        if draft.requires_system_integration:
+            retrieval_focus.extend(["系统接入", "接口权限", "安全评审", "接入风险"])
+        budget_amount = float(getattr(project, "budget_amount", 0) or 0)
+        if draft.quoted_amount > 0 and budget_amount > 0 and draft.quoted_amount > budget_amount:
+            retrieval_focus.extend(["预算例外", "采购审批矩阵", "超预算审批"])
+        if self._looks_like_unreliable_source_platform(draft.source_platform) or (
+            draft.source_url and self._looks_like_social_source(draft.source_url)
+        ):
+            retrieval_focus.extend(["可追溯公开来源", "供应商主体核验", "背景核验"])
+        if missing_items:
+            retrieval_focus.extend(["必备材料清单", "补充材料要求"])
+        if any("安全" in item for item in missing_items):
+            retrieval_focus.extend(["安全问卷", "安全白皮书"])
+        if any("数据" in item or "DPA" in item for item in missing_items):
+            retrieval_focus.extend(["数据处理说明", "数据存储部署", "数据流说明"])
+        if any("事件" in item for item in missing_items):
+            retrieval_focus.append("安全事件通知")
+
+        service_summary = draft.profile_summary or (supplier_profile.company_summary if supplier_profile else "") or "未提供"
+        public_source = ", ".join(dossier.source_urls) or draft.source_url or "未提供"
         lines = [
-            "你是企业内部采购流程中的供应商准入审查助手。",
-            "请根据供应商 dossier、项目背景和内部采购/法务/合规要求，完成一轮可落地的采购审查。",
-            "不要输出泛泛而谈的建议，而要给出有依据的准入结论、风险说明和下一步动作。",
-            "",
-            "你的任务：",
-            "1. 判断该供应商是否适合继续进入采购人工确认。",
-            "2. 明确指出法律、安全、商业或数据处理方面的具体风险。",
-            "3. 给出建议：继续推进、补充材料，还是升级到法务/安全复核。",
-            "",
-            "项目背景：",
+            "采购场景：",
             f"- 项目名称：{project.title}",
             f"- 采购类别：{project.category}",
             f"- 数据范围：{project.data_scope or 'none'}",
             f"- 项目摘要：{project.summary or '未提供'}",
             "",
-            "供应商 dossier：",
-            f"- 供应商名称: {dossier.vendor_name or draft.vendor_name}",
-            f"- 法律实体：{dossier.legal_entity or '未识别'}",
-            f"- 服务模型：{dossier.service_model or '未识别'}",
-            f"- 公开来源：{', '.join(dossier.source_urls) or draft.source_url or '未提供'}",
-            f"- 数据接触级别：{dossier.data_access_level}",
-            f"- 部署/存储区域：{dossier.hosting_region or '未说明'}",
-            f"- 分包信号：{dossier.subprocessor_signal}",
-            f"- 安全信号：{', '.join(dossier.security_signal_summary) or '未识别'}",
+            "供应商服务：",
+            f"- 供应商名称：{dossier.vendor_name or draft.vendor_name}",
+            f"- 服务类型：{dossier.service_model or '未识别'}",
+            f"- 公开来源：{public_source}",
+            f"- 报价/预计合作金额：{f'{draft.quoted_amount:.2f} {project.currency}' if draft.quoted_amount > 0 else '未提供'}",
+            f"- 产品/服务简介：{service_summary}",
             "",
-            "材料中提炼出的采购上下文：",
-            f"- 供应商摘要：{draft.profile_summary or '未提供'}",
-            f"- 采购备注：{draft.procurement_notes or '未提供'}",
+            "风险信号：",
+            *[f"- {item}" for item in risk_signals[:5]],
         ]
-        if supplier_profile and supplier_profile.data_involvement:
-            lines.append(f"- LLM 识别的数据参与情况：{supplier_profile.data_involvement}")
         if missing_items:
-            lines.append(f"- 预检识别出的缺失材料：{', '.join(missing_items[:6])}")
+            lines.extend(["", "缺失材料：", *[f"- {item}" for item in missing_items[:6]]])
         if focus_points.strip():
             lines.extend(["", "采购额外关注点：", focus_points.strip()])
-        lines.extend(
-            [
-                "",
-                "请输出一份基于证据的审查结论：要引用采购制度依据，明确阻塞原因或升级原因，并说明采购是否可以把该供应商提交给法务做合同审查。",
-            ]
-        )
+        lines.extend(["", "检索重点：", *[f"- {item}" for item in list(dict.fromkeys(retrieval_focus))[:12]]])
         return "\n".join(lines)
 
     def _derive_procurement_final_recommendation(
         self,
         *,
+        project: ProcurementProject,
+        draft: ProcurementAgentVendorDraft,
         review,
         material_gate: ProcurementMaterialGate,
         requirement_checks: list[ProcurementRequirementCheck],
         supplier_dossier: SupplierDossier,
+        supplier_profile: SupplierProfileInsights | None = None,
     ) -> str:
         precheck = self._derive_procurement_precheck_recommendation(material_gate, requirement_checks)
         if precheck != "review_ready":
             return precheck
+        fit_status, _fit_detail = self._assess_procurement_business_fit(
+            project=project,
+            draft=draft,
+            supplier_profile=supplier_profile,
+            supplier_dossier=supplier_dossier,
+        )
+        if fit_status == "fail":
+            return "needs_required_materials"
         risk_flags = self._extract_procurement_hard_risk_flags(review, material_gate, supplier_dossier)
         if risk_flags:
             return "review_with_risks"
         return "recommend_proceed"
+
+    def _assess_procurement_business_fit(
+        self,
+        *,
+        project: ProcurementProject,
+        draft: ProcurementAgentVendorDraft,
+        supplier_dossier: SupplierDossier,
+        supplier_profile: SupplierProfileInsights | None = None,
+    ) -> tuple[str, str]:
+        project_text = " ".join(
+            item
+            for item in [
+                project.title,
+                project.category,
+                project.summary,
+                project.data_scope,
+            ]
+            if item
+        )
+        supplier_text = " ".join(
+            item
+            for item in [
+                draft.profile_summary,
+                draft.procurement_notes,
+                supplier_dossier.service_model,
+                supplier_profile.company_summary if supplier_profile else "",
+                supplier_profile.products_services if supplier_profile else "",
+            ]
+            if item
+        )
+
+        generic_fit_tokens = {
+            "软件",
+            "系统",
+            "平台",
+            "工具",
+            "流程",
+            "管理",
+            "业务",
+            "数据",
+            "报表",
+            "配置",
+            "任务",
+            "协同",
+            "审批",
+            "分析",
+            "能力",
+            "服务",
+            "项目",
+            "日常",
+            "支持",
+            "采购",
+            "供应",
+            "应商",
+            "供应商",
+            "需要",
+            "继续",
+            "推进",
+            "续推",
+            "覆盖",
+            "当前",
+            "介绍",
+            "关键",
+            "功能",
+            "专业",
+            "提醒",
+            "表单",
+        }
+        project_tokens = {token for token in tokenize_text(project_text.lower()) if len(token) >= 2}
+        supplier_tokens = {token for token in tokenize_text(supplier_text.lower()) if len(token) >= 2}
+        overlap = (project_tokens & supplier_tokens) - generic_fit_tokens
+
+        software_like = {"software", "saas", "system", "platform", "系统", "平台"}
+        service_model = (supplier_dossier.service_model or "").lower()
+        category = (project.category or "").lower()
+        software_match = category == "software" and any(token in service_model for token in software_like)
+
+        if overlap:
+            if overlap:
+                matched = "、".join(sorted(list(overlap))[:4])
+                fit_detail = f"供应商产品描述与当前项目需求存在直接匹配信号：{matched}。"
+            else:
+                fit_detail = "供应商服务形态与当前采购类别基本一致，可作为候选供应商继续推进。"
+            if draft.quoted_amount > 0 and float(project.budget_amount or 0) > 0:
+                budget = float(project.budget_amount or 0)
+                if draft.quoted_amount > budget * 1.2:
+                    return "fail", f"供应商能力初步匹配，但报价 {draft.quoted_amount:.2f} {project.currency} 明显高于项目预算 {budget:.2f} {project.currency}，当前不建议继续推进。"
+                if draft.quoted_amount > budget:
+                    return "warn", f"{fit_detail} 但当前报价 {draft.quoted_amount:.2f} {project.currency} 已高于项目预算 {budget:.2f} {project.currency}，建议先确认商务可行性。"
+                fit_detail = f"{fit_detail} 当前报价 {draft.quoted_amount:.2f} {project.currency} 在预算范围内。"
+            return "pass", fit_detail
+
+        if not supplier_text.strip():
+            return "fail", "当前缺少可用于判断需求匹配度的产品或服务说明，暂不建议直接推进。"
+
+        if software_match:
+            return "warn", "供应商属于软件或平台类服务，但当前描述没有体现和本项目核心场景的直接匹配点，建议采购要求业务补充功能对照。"
+
+        return "warn", "已能识别供应商主体和基础能力，但与当前项目需求的直接匹配信号较弱，建议采购补充使用场景或功能对照后再确认。"
 
     def _build_procurement_agent_assessment(
         self,
@@ -3480,6 +4374,13 @@ class ProjectService:
         supplier_dossier = supplier_dossier or SupplierDossier(vendor_name=draft.vendor_name)
         raw_risk_flags = self._extract_procurement_hard_risk_flags(review, material_gate, supplier_dossier)
         readable_risks = [self._risk_summary_from_flag(flag) for flag in raw_risk_flags]
+        missing_items = [check.label for check in requirement_checks if check.required and check.status != "pass"]
+        fit_status, fit_detail = self._assess_procurement_business_fit(
+            project=project,
+            draft=draft,
+            supplier_profile=supplier_profile,
+            supplier_dossier=supplier_dossier,
+        )
         legal_handoff = self._derive_procurement_legal_handoff(
             project,
             review,
@@ -3489,20 +4390,51 @@ class ProjectService:
 
         recommendation = draft.ai_recommendation or "needs_required_materials"
         conclusion_map = {
-            "reject_irrelevant_materials": "材料与供应商准入无关或无法确认主体，当前不能进入正式审查。",
-            "needs_required_materials": "材料与供应商相关，但仍建议补充关键材料后再做完整复核。",
-            "review_with_risks": "材料基本合理，但命中了需要升级处理的风险信号，建议复核。",
-            "recommend_proceed": "材料已通过基础过滤，且未发现明显风险，可进入采购人工确认。",
+            "reject_irrelevant_materials": "当前识别到供应商主体或来源存在明显问题，建议采购重点核实相关风险后再决定是否继续。",
+            "needs_required_materials": "当前识别到若干待补充信息，建议采购补齐材料后再做人工判断。",
+            "review_with_risks": "当前识别到需要重点关注的风险信号，建议采购结合制度依据进一步判断。",
+            "recommend_proceed": "当前未识别到明显阻塞项，但仍建议采购结合制度依据做人工确认。",
         }
         conclusion = conclusion_map.get(recommendation, "当前材料不足以支持继续推进。")
+        analysis_tags = self._build_procurement_analysis_tags(
+            project=project,
+            draft=draft,
+            material_gate=material_gate,
+            requirement_checks=requirement_checks,
+            raw_risk_flags=raw_risk_flags,
+            fit_status=fit_status,
+        )
+        blocking_issues = list(material_gate.blocking_reasons)
+        if fit_status in {"warn", "fail"} and fit_detail:
+            blocking_issues.append(fit_detail)
+        if draft.handles_company_data and "data_handling_risk" in analysis_tags:
+            blocking_issues.append("该供应商会接触公司或客户数据，需重点确认数据处理边界。")
+        if draft.requires_system_integration and "system_integration_risk" in analysis_tags:
+            blocking_issues.append("该供应商需要与内部系统对接，需重点确认接口、权限和实施影响。")
+        fit_reason = self._build_procurement_analysis_summary(
+            material_gate=material_gate,
+            fit_detail=fit_detail,
+            readable_risks=readable_risks,
+            missing_items=missing_items,
+            recommendation=recommendation,
+        )
+        escalation = ""
+        fit_decision = ""
 
         check_items = [
             StructuredCheckItemRead(
-                label="Material gate",
+                label="主体与来源是否成立",
                 status="pass" if material_gate.decision == "pass" else "fail",
-                detail="; ".join(material_gate.blocking_reasons[:3]) if material_gate.blocking_reasons else "Base supplier identity and capability evidence were detected.",
+                detail="；".join(material_gate.blocking_reasons[:3]) if material_gate.blocking_reasons else "已识别到供应商主体、来源和基础能力材料。",
             )
         ]
+        check_items.append(
+            StructuredCheckItemRead(
+                label="需求匹配度",
+                status="pass" if fit_status == "pass" else "warn" if fit_status == "warn" else "fail",
+                detail=fit_detail,
+            )
+        )
         for check in requirement_checks:
             check_items.append(
                 StructuredCheckItemRead(
@@ -3513,9 +4445,9 @@ class ProjectService:
             )
         check_items.append(
             StructuredCheckItemRead(
-                label="Final recommendation",
-                status="pass" if recommendation == "recommend_proceed" else "warn" if recommendation == "review_with_risks" else "fail",
-                detail=conclusion,
+                label="风险分析摘要",
+                status="pass" if not blocking_issues and not readable_risks else "warn",
+                detail=fit_reason,
             )
         )
 
@@ -3532,15 +4464,22 @@ class ProjectService:
         if supplier_profile and supplier_profile.missing_materials:
             open_questions.extend([f"模型建补充: {item}" for item in supplier_profile.missing_materials[:2]])
 
-        summary = review.answer or conclusion
+        summary = fit_reason
         return StructuredReviewRead(
             review_kind="procurement_agent_review",
             conclusion=conclusion,
             recommendation=recommendation,
             summary=summary,
+            analysis_tags=analysis_tags,
+            fit_decision=fit_decision,
+            fit_reason=fit_reason,
+            missing_materials=missing_items[:6],
+            escalation=escalation,
+            decision_suggestion="manual_review",
             next_step=legal_handoff["next_step"],
             legal_handoff_recommendation=legal_handoff["recommendation"],
             legal_handoff_reason=legal_handoff["reason"],
+            blocking_issues=list(dict.fromkeys(blocking_issues))[:6],
             check_items=check_items,
             risk_flags=readable_risks,
             open_questions=open_questions[:6],
@@ -3599,6 +4538,94 @@ class ProjectService:
             "next_step": "采购确认供应商信息无误后，再决定是否上传给法务。",
         }
 
+    def _procurement_missing_material_tag(self, label: str) -> str:
+        mapping = {
+            "供应商主体信息": "missing_subject_identity",
+            "产品/服务说明": "missing_service_description",
+            "可追溯公开来源": "missing_public_source",
+            "采购用途/商务背景": "missing_procurement_context",
+            "供应商联系邮箱": "missing_contact_email",
+            "报价或预计合作金额": "missing_commercial_quote",
+            "安全问卷或安全白皮书": "missing_security_materials",
+            "数据处理说明或隐私/DPA材料": "missing_data_processing_materials",
+            "数据存储/部署/数据流说明": "missing_hosting_details",
+            "安全事件通知承诺": "missing_incident_commitment",
+        }
+        return mapping.get(label, f"missing_{label}".replace("/", "_").replace(" ", "_"))
+
+    def _build_procurement_analysis_tags(
+        self,
+        *,
+        project: ProcurementProject,
+        draft: ProcurementAgentVendorDraft,
+        material_gate: ProcurementMaterialGate,
+        requirement_checks: list[ProcurementRequirementCheck],
+        raw_risk_flags: list[str],
+        fit_status: str,
+    ) -> list[str]:
+        tags: list[str] = []
+        if material_gate.decision != "pass":
+            tags.append("material_gate_failed")
+        if any("主体" in reason for reason in material_gate.blocking_reasons):
+            tags.append("subject_identity_gap")
+        if any("来源" in reason or "社交平台" in reason for reason in material_gate.blocking_reasons):
+            tags.append("source_reliability_risk")
+        if any("产品" in reason or "服务能力" in reason for reason in material_gate.blocking_reasons):
+            tags.append("service_capability_gap")
+        if fit_status == "warn":
+            tags.append("business_fit_gap")
+        elif fit_status == "fail":
+            tags.extend(["budget_or_fit_blocker", "manual_replacement_recommended"])
+        if float(project.budget_amount or 0) > 0 and draft.quoted_amount > float(project.budget_amount or 0):
+            tags.append("budget_overrun")
+        if draft.handles_company_data:
+            tags.append("data_handling_risk")
+        if draft.requires_system_integration:
+            tags.append("system_integration_risk")
+        for check in requirement_checks:
+            if check.required and check.status != "pass":
+                tags.append(self._procurement_missing_material_tag(check.label))
+        risk_flag_map = {
+            "unknown_data_residency": "unknown_data_residency",
+            "unclear_subprocessor_arrangements": "unclear_subprocessor_arrangements",
+            "missing_audit_rights": "missing_audit_rights",
+            "missing_security_incident_notice": "missing_incident_commitment",
+            "missing_data_processing_terms": "missing_data_processing_materials",
+            "liability_cap_weakened": "liability_cap_weakened",
+            "manual_follow_up_required": "manual_follow_up_required",
+        }
+        for flag in raw_risk_flags:
+            tags.append(risk_flag_map.get(flag, flag))
+        return list(dict.fromkeys(tags))
+
+    def _build_procurement_analysis_summary(
+        self,
+        *,
+        material_gate: ProcurementMaterialGate,
+        fit_detail: str,
+        readable_risks: list[str],
+        missing_items: list[str],
+        recommendation: str,
+    ) -> str:
+        parts: list[str] = []
+        if material_gate.blocking_reasons:
+            parts.append(material_gate.blocking_reasons[0])
+        if fit_detail:
+            parts.append(fit_detail)
+        if readable_risks:
+            parts.append(f"重点风险：{readable_risks[0]}")
+        if missing_items:
+            parts.append(f"待补充：{'、'.join(missing_items[:3])}")
+        if not parts:
+            default_map = {
+                "reject_irrelevant_materials": "当前供应商信息不足以支撑采购推进，需要采购人工确认是否更换候选供应商。",
+                "needs_required_materials": "当前供应商存在待确认项，建议采购结合制度依据人工判断。",
+                "review_with_risks": "当前供应商存在风险信号，建议采购结合制度依据进一步核实。",
+                "recommend_proceed": "当前供应商未发现明显阻塞项，但仍建议采购结合制度依据人工判断。",
+            }
+            parts.append(default_map.get(recommendation, "请采购结合制度依据和当前材料做人工判断。"))
+        return " ".join(part for part in parts if part).strip()
+
     def _build_vendor_structured_review(
         self,
         project: ProcurementProject,
@@ -3648,28 +4675,42 @@ class ProjectService:
         review,
     ) -> StructuredReviewRead:
         risk_flags = self._extract_risk_flags(review)
+        blocking_risk_flags = [flag for flag in risk_flags if flag != "manual_follow_up_required"]
+        watch_risk_flags = [flag for flag in risk_flags if flag == "manual_follow_up_required"]
         comparison_view = review.debug_summary.get("comparison_view", {}) if isinstance(review.debug_summary, dict) else {}
-        missing_clauses = comparison_view.get("missing_clauses", {}) if isinstance(comparison_view, dict) else {}
-        clause_details: list[str] = []
-        for doc_title, clauses in list(missing_clauses.items())[:2]:
+        blocking_clauses = comparison_view.get("blocking_clauses", {}) if isinstance(comparison_view, dict) else {}
+        watch_clauses = comparison_view.get("watch_clauses", {}) if isinstance(comparison_view, dict) else {}
+        blocking_details: list[str] = []
+        watch_details: list[str] = []
+        for doc_title, clauses in list(blocking_clauses.items())[:2]:
             if clauses:
-                clause_details.append(f"{doc_title} 缺失或弱化 {', '.join(clauses[:4])}")
-        recommendation = "review_with_risks" if (risk_flags or clause_details) else "recommend_proceed"
+                blocking_details.append(f"{doc_title} 存在关键条款风险：{', '.join(clauses[:4])}")
+        for doc_title, clauses in list(watch_clauses.items())[:2]:
+            if clauses:
+                watch_details.append(f"{doc_title} 存在观察项：{', '.join(clauses[:4])}")
+        clause_details = [*blocking_details, *watch_details]
+        recommendation = "review_with_risks" if (blocking_risk_flags or blocking_details) else "recommend_proceed"
+        if watch_details and recommendation == "recommend_proceed":
+            recommendation = "needs_follow_up"
+        if watch_risk_flags and recommendation == "recommend_proceed":
+            recommendation = "needs_follow_up"
         if not review.citations and recommendation == "recommend_proceed":
             recommendation = "needs_follow_up"
-        if risk_flags or clause_details:
+        if blocking_risk_flags or blocking_details:
             risk_level = "high"
-        elif not review.citations or review.next_action != "answer":
+        elif watch_details or watch_risk_flags or not review.citations or review.next_action != "answer":
             risk_level = "medium"
         else:
             risk_level = "low"
-        decision_suggestion = "return" if recommendation != "recommend_proceed" else "approve"
-        blocking_issues = list(clause_details)
+        decision_suggestion = "return" if recommendation == "review_with_risks" else "approve"
+        blocking_issues = list(blocking_details)
         if not review.citations:
             blocking_issues.append("当前缺少足够条款引用，建议法务谨慎复核。")
         if review.next_action != "answer":
             blocking_issues.append("模型未形成完全确定结论，建议结合人工判断。")
         summary = review.answer or ("发现合同红线风险，建议退回采购处理。" if decision_suggestion == "return" else "两份合同已完成初步红线审查。")
+        if clause_details:
+            summary = f"{summary}\n\n合同红线差异摘要：{'；'.join(clause_details[:3])}"
         return StructuredReviewRead(
             review_kind="legal_contract_review",
             conclusion="发现合同红线风险，建议退回采购处理" if decision_suggestion == "return" else "合同可进入人工法务决策",
@@ -3688,13 +4729,17 @@ class ProjectService:
                 ),
                 StructuredCheckItemRead(
                     label="红线条款差异",
-                    status="fail" if clause_details else "pass",
+                    status="fail" if blocking_details else "warn" if watch_details else "pass",
                     detail="；".join(clause_details[:2]) if clause_details else "未识别到明确的红线条款缺失或弱化。",
                 ),
                 StructuredCheckItemRead(
                     label="法务建议动作",
                     status="fail" if decision_suggestion == "return" else "warn" if recommendation == "needs_follow_up" else "pass",
-                    detail="建议退回采购处理当前合同风险。" if decision_suggestion == "return" else "可进入法务人工通过判断。",
+                    detail="建议退回采购处理当前合同风险。"
+                    if decision_suggestion == "return"
+                    else "建议法务复核观察项后再决定是否通过。"
+                    if recommendation == "needs_follow_up"
+                    else "可进入法务人工通过判断。",
                 ),
             ],
             risk_flags=risk_flags,

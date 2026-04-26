@@ -1,0 +1,67 @@
+{
+  "case_count": 120,
+  "base_case_count": 12,
+  "variants_per_base_case": 10,
+  "kb_doc_count": 22,
+  "embedding_backend": "sentence_transformer",
+  "embedding_dimension": 768,
+  "result_file": "D:\\Code\\RAG+Agent项目\\tmp_eval_legal_ablation\\run_10220\\legal_ablation_result.json",
+  "pipelines": {
+    "bm25_only": {
+      "success": 0.6917,
+      "decision_accuracy": 0.9167,
+      "risk_accuracy": 0.8333,
+      "clause_recall": 0.7847,
+      "doc_hit@1": 0.725,
+      "doc_hit@3": 0.8583,
+      "doc_mrr": 0.7957,
+      "primary_doc_hit@1": 0.3583,
+      "primary_doc_hit@3": 0.5083,
+      "primary_doc_mrr": 0.4354,
+      "cross_encoder_active": false,
+      "elapsed_seconds": 127.4
+    },
+    "semantic_only": {
+      "success": 0.5083,
+      "decision_accuracy": 0.9167,
+      "risk_accuracy": 0.8417,
+      "clause_recall": 0.7847,
+      "doc_hit@1": 0.0,
+      "doc_hit@3": 0.5833,
+      "doc_mrr": 0.3342,
+      "primary_doc_hit@1": 0.0,
+      "primary_doc_hit@3": 0.3333,
+      "primary_doc_mrr": 0.1867,
+      "cross_encoder_active": false,
+      "elapsed_seconds": 110.08
+    },
+    "hybrid_rrf": {
+      "success": 0.8333,
+      "decision_accuracy": 0.9167,
+      "risk_accuracy": 0.8333,
+      "clause_recall": 0.7847,
+      "doc_hit@1": 0.7167,
+      "doc_hit@3": 1.0,
+      "doc_mrr": 0.8444,
+      "primary_doc_hit@1": 0.25,
+      "primary_doc_hit@3": 0.5667,
+      "primary_doc_mrr": 0.4117,
+      "cross_encoder_active": false,
+      "elapsed_seconds": 109.09
+    },
+    "hybrid_rrf_rerank": {
+      "success": 0.8333,
+      "decision_accuracy": 0.9167,
+      "risk_accuracy": 0.8333,
+      "clause_recall": 0.7847,
+      "doc_hit@1": 0.6583,
+      "doc_hit@3": 0.925,
+      "doc_mrr": 0.7951,
+      "primary_doc_hit@1": 0.35,
+      "primary_doc_hit@3": 0.5417,
+      "primary_doc_mrr": 0.4907,
+      "cross_encoder_active": true,
+      "elapsed_seconds": 293.47
+    }
+  }
+}

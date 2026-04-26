@@ -1868,9 +1868,42 @@ a { color: inherit; text-decoration: none; }
   align-items: start;
 }
 
+.procurement-form-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .procurement-upload-panel,
 .procurement-form-panel {
   height: 100%;
+}
+
+.procurement-form-panel-compact {
+  max-width: 100%;
+}
+
+.procurement-form-intro {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.procurement-form-grid {
+  grid-template-columns: minmax(220px, 0.85fr) minmax(320px, 1.15fr);
+  align-items: start;
+}
+
+.procurement-form-lead {
+  grid-column: 1;
+}
+
+.procurement-form-source {
+  grid-column: 2;
+}
+
+.procurement-form-grid textarea {
+  min-height: 132px;
 }
 
 .procurement-stage-board {

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "https://esm.sh/react@18.3.1";
 
 import { DEMO_FILES, DEMO_QUESTIONS, displayLabel, toneOf } from "./config.js";
-import { apiGet, apiPost } from "./api.js";
+import { apiGet, apiPost, openEventStream } from "./api.js";
 import { ActivityList, StatCard } from "./components.js";
 
 function formatCurrency(amount, currency) {
@@ -533,21 +533,65 @@ export function KnowledgePage({ html, sources, tasks, refreshAll, rememberTask }
   const [deletingSourceId, setDeletingSourceId] = useState("");
 
   useEffect(() => {
-    if (!taskDetail?.id || ["indexed", "failed"].includes(taskDetail.status)) return undefined;
-    const timer = setInterval(async () => {
-      try {
-        const detail = await apiGet(`/knowledge/tasks/${taskDetail.id}`);
-        setTaskDetail(detail);
-        if (["indexed", "failed"].includes(detail.status)) {
+    const taskId = taskDetail?.id;
+    const taskStatus = taskDetail?.status;
+    if (!taskId || ["indexed", "failed"].includes(taskStatus)) return undefined;
+    let timer = null;
+    let stream = null;
+
+    const startPolling = () => {
+      if (timer) return;
+      timer = setInterval(async () => {
+        try {
+          const detail = await apiGet(`/knowledge/tasks/${taskId}`);
+          setTaskDetail((current) => ({ ...current, ...detail }));
+          if (["indexed", "failed"].includes(detail.status)) {
+            clearInterval(timer);
+            timer = null;
+            refreshAll();
+          }
+        } catch (_) {
           clearInterval(timer);
-          refreshAll();
+          timer = null;
         }
+      }, 1500);
+    };
+
+    if (typeof EventSource === "function") {
+      try {
+        stream = openEventStream(`/knowledge/tasks/${taskId}/stream`);
+        stream.addEventListener("task", (event) => {
+          const payload = JSON.parse(event.data || "{}");
+          const nextTask = payload.task || {};
+          setTaskDetail((current) => ({
+            ...current,
+            ...nextTask,
+            stage: payload.stage || current?.stage || "",
+            progress: payload.progress || current?.progress || null,
+            message: payload.message || current?.message || "",
+          }));
+          if (["indexed", "failed"].includes(nextTask.status)) {
+            stream?.close();
+            refreshAll();
+          }
+        });
+        stream.onerror = () => {
+          stream?.close();
+          stream = null;
+          startPolling();
+        };
       } catch (_) {
-        clearInterval(timer);
+        startPolling();
       }
-    }, 1500);
-    return () => clearInterval(timer);
-  }, [taskDetail, refreshAll]);
+    } else {
+      startPolling();
+    }
+
+    return () => {
+      if (stream) stream.close();
+      if (timer) clearInterval(timer);
+    };
+  }, [taskDetail?.id, taskDetail?.status, refreshAll]);
 
   async function handleUpload() {
     try {
@@ -565,6 +609,9 @@ export function KnowledgePage({ html, sources, tasks, refreshAll, rememberTask }
         source_name: result.source.title,
         status: result.duplicate ? "indexed" : "uploaded",
         chunk_count: result.chunk_count || 0,
+        stage: result.duplicate ? "indexed" : "uploaded",
+        progress: null,
+        message: result.duplicate ? "检测到重复文档，已直接复用现有索引。" : "文档已提交，等待开始索引。",
       });
       setFile(null);
       setRemoteUrl("");
@@ -682,6 +729,17 @@ export function KnowledgePage({ html, sources, tasks, refreshAll, rememberTask }
                   <p className="muted" style=${{ marginTop: "10px" }}>
                     ${taskDetail.source_name || "\u672a\u77e5\u6587\u6863"} / \u5207\u5757 ${taskDetail.chunk_count || 0}
                   </p>
+                  ${taskDetail.message
+                    ? html`<p className="subtle" style=${{ marginTop: "8px" }}>${taskDetail.message}</p>`
+                    : null}
+                  ${taskDetail.progress?.total
+                    ? html`
+                        <p className="subtle" style=${{ marginTop: "6px" }}>
+                          ${taskDetail.stage || "indexing"} / ${taskDetail.progress.current || 0} / ${taskDetail.progress.total}
+                          ${taskDetail.progress.unit || ""}
+                        </p>
+                      `
+                    : null}
                 </div>
               `
             : null}

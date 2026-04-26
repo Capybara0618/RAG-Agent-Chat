@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "https://esm.sh/react@18.3.1
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
 import htm from "https://esm.sh/htm@3.1.1";
 
+const MODULE_VERSION = "20260419a";
+
 import {
   apiGet,
   apiPost,
@@ -11,11 +13,10 @@ import {
   loadStoredTaskIds,
   rememberTaskId,
   storeAuthToken,
-} from "./api.js";
-import { DEMO_ACCOUNTS, DEMO_QUESTIONS, navItemsFor } from "./config.js";
-import { Layout } from "./components.js";
-import { AssistantPage, AuditPage } from "./pages-assistant-audit.js";
-import { KnowledgePage, OverviewPage } from "./pages-overview-knowledge.js";
+} from "./api.js?v=20260419a";
+import { DEMO_ACCOUNTS, DEMO_QUESTIONS, navItemsFor } from "./config.js?v=20260419a";
+import { Layout } from "./components.js?v=20260419a";
+import { KnowledgePage, OverviewPage } from "./pages-overview-knowledge.js?v=20260419a";
 
 const html = htm.bind(React.createElement);
 
@@ -128,6 +129,9 @@ function App() {
   const [assistantResult, setAssistantResult] = useState(null);
   const [projectsPageComponent, setProjectsPageComponent] = useState(null);
   const [projectsPageError, setProjectsPageError] = useState("");
+  const [assistantPageComponent, setAssistantPageComponent] = useState(null);
+  const [auditPageComponent, setAuditPageComponent] = useState(null);
+  const [assistantModuleError, setAssistantModuleError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -264,7 +268,7 @@ function App() {
     if (page !== "projects") return;
     if (projectsPageComponent || projectsPageError) return;
     let cancelled = false;
-    import("./pages-projects.js")
+    import(`./pages-projects.js?v=${MODULE_VERSION}`)
       .then((module) => {
         if (cancelled) return;
         setProjectsPageComponent(() => module.ProjectsPage);
@@ -277,6 +281,25 @@ function App() {
       cancelled = true;
     };
   }, [page, projectsPageComponent, projectsPageError]);
+
+  useEffect(() => {
+    if (!["assistant", "audit"].includes(page)) return;
+    if ((page === "assistant" && assistantPageComponent) || (page === "audit" && auditPageComponent) || assistantModuleError) return;
+    let cancelled = false;
+    import(`./pages-assistant-audit.js?v=${MODULE_VERSION}`)
+      .then((module) => {
+        if (cancelled) return;
+        setAssistantPageComponent(() => module.AssistantPage);
+        setAuditPageComponent(() => module.AuditPage);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setAssistantModuleError(err?.message || String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [page, assistantPageComponent, auditPageComponent, assistantModuleError]);
 
   function openProjectWorkspace(projectId) {
     if (!projectId) return;
@@ -360,6 +383,23 @@ function App() {
     }
 
     if (page === "assistant" && currentUser.role !== "business") {
+      if (assistantModuleError) {
+        return html`
+          <div className="center-panel">
+            <h3>审查助手加载失败</h3>
+            <p className="muted">${assistantModuleError}</p>
+          </div>
+        `;
+      }
+      if (!assistantPageComponent) {
+        return html`
+          <div className="center-panel">
+            <div className="loading-ring"></div>
+            <h3>正在加载审查助手</h3>
+          </div>
+        `;
+      }
+      const AssistantPage = assistantPageComponent;
       return html`
         <${AssistantPage}
           html=${html}
@@ -380,6 +420,23 @@ function App() {
     }
 
     if (page === "audit" && currentUser.role === "admin") {
+      if (assistantModuleError) {
+        return html`
+          <div className="center-panel">
+            <h3>审计页面加载失败</h3>
+            <p className="muted">${assistantModuleError}</p>
+          </div>
+        `;
+      }
+      if (!auditPageComponent) {
+        return html`
+          <div className="center-panel">
+            <div className="loading-ring"></div>
+            <h3>正在加载审计页面</h3>
+          </div>
+        `;
+      }
+      const AuditPage = auditPageComponent;
       return html`
         <${AuditPage}
           html=${html}

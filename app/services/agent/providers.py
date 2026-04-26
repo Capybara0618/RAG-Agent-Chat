@@ -7,9 +7,7 @@ from app.services.retrieval.service import RetrievedChunk
 
 
 class LLMProvider(Protocol):
-    def classify_intent(self, query: str) -> tuple[str, float]: ...
-
-    def build_retrieval_plan(self, query: str, intent: str, top_k: int) -> dict[str, object]: ...
+    def build_retrieval_plan(self, query: str, task_mode: str, top_k: int) -> dict[str, object]: ...
 
     def extract_supplier_profile(
         self,
@@ -23,7 +21,7 @@ class LLMProvider(Protocol):
         self,
         *,
         query: str,
-        intent: str,
+        task_mode: str,
         citations: list[Citation],
         retrieved_chunks: list[RetrievedChunk],
         comparison_view: dict[str, object] | None,

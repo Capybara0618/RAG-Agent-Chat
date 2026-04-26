@@ -146,6 +146,9 @@ class ProjectRepository:
         contact_phone: str,
         profile_summary: str,
         procurement_notes: str,
+        handles_company_data: bool,
+        requires_system_integration: bool,
+        quoted_amount: float,
     ) -> VendorCandidate:
         candidate = VendorCandidate(
             project_id=project_id,
@@ -157,6 +160,9 @@ class ProjectRepository:
             contact_phone=contact_phone,
             profile_summary=profile_summary,
             procurement_notes=procurement_notes,
+            handles_company_data=handles_company_data,
+            requires_system_integration=requires_system_integration,
+            quoted_amount=quoted_amount,
         )
         db.add(candidate)
         db.flush()

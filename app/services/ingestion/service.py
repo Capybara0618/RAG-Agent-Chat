@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from collections import deque
+from datetime import datetime, timezone
 import hashlib
+from queue import Queue
+import re
+from threading import Lock
 from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,6 +28,8 @@ from app.services.retrieval.embeddings import EmbeddingService
 
 
 class IngestionService:
+    _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]+')
+
     def __init__(
         self,
         *,
@@ -37,6 +44,9 @@ class IngestionService:
         self.parser = parser
         self.embedding_service = embedding_service
         self.session_factory = session_factory
+        self._task_event_lock = Lock()
+        self._task_event_history: dict[str, deque[dict[str, object]]] = {}
+        self._task_subscribers: dict[str, list[Queue[dict[str, object]]]] = {}
 
     def submit_ingestion(
         self,
@@ -78,6 +88,12 @@ class IngestionService:
         if duplicate:
             document.status = IndexingTaskStatus.indexed.value
             document.parse_status = IndexingTaskStatus.indexed.value
+        self._publish_task_event(
+            task.id,
+            event="task_submitted",
+            message="文档已加入索引队列。",
+            task=self._to_task_payload(task),
+        )
         return KnowledgeUploadResponse(
             task_id=task.id,
             source=self._to_source_read(document),
@@ -98,6 +114,14 @@ class IngestionService:
                 document.status = IndexingTaskStatus.indexing.value
                 document.parse_status = IndexingTaskStatus.indexing.value
             db.commit()
+            refreshed_task = self.repository.get_indexing_task(db, task_id)
+            self._publish_task_event(
+                task_id,
+                event="task_progress",
+                stage="indexing",
+                message="开始解析文档。",
+                task=self._to_task_payload(refreshed_task),
+            )
 
             if task.remote_url:
                 data = b""
@@ -106,10 +130,37 @@ class IngestionService:
                 path = Path(task.source_path)
                 data = path.read_bytes()
                 source_type, sections = self.parser.parse_bytes(name=task.source_name, data=data, remote_url=None)
+            self._publish_task_event(
+                task_id,
+                event="task_progress",
+                stage="parsed",
+                message=f"解析完成，共提取 {len(sections)} 个段落。",
+                task=self._to_task_payload(refreshed_task),
+                progress={"current": len(sections), "total": len(sections), "unit": "sections"},
+            )
 
             chunks = semantic_chunk_sections(sections)
-            for chunk in chunks:
+            self._publish_task_event(
+                task_id,
+                event="task_progress",
+                stage="chunked",
+                message=f"切分完成，共生成 {len(chunks)} 个片段。",
+                task=self._to_task_payload(refreshed_task),
+                progress={"current": len(chunks), "total": len(chunks), "unit": "chunks"},
+            )
+
+            progress_interval = max(len(chunks) // 4, 1)
+            for index, chunk in enumerate(chunks, start=1):
                 chunk["embedding"] = self.embedding_service.embed_text(str(chunk["content"]))
+                if index == 1 or index == len(chunks) or index % progress_interval == 0:
+                    self._publish_task_event(
+                        task_id,
+                        event="task_progress",
+                        stage="embedding",
+                        message=f"正在生成向量：{index}/{len(chunks)}。",
+                        task=self._to_task_payload(refreshed_task),
+                        progress={"current": index, "total": len(chunks), "unit": "chunks"},
+                    )
 
             self.repository.finalize_document_index(
                 db,
@@ -128,6 +179,15 @@ class IngestionService:
                 last_error="",
             )
             db.commit()
+            finalized_task = self.repository.get_indexing_task(db, task_id)
+            self._publish_task_event(
+                task_id,
+                event="task_completed",
+                stage="indexed",
+                message=f"索引完成，共写入 {len(chunks)} 个片段。",
+                task=self._to_task_payload(finalized_task),
+                progress={"current": len(chunks), "total": len(chunks), "unit": "chunks"},
+            )
         except Exception as exc:
             task = self.repository.get_indexing_task(db, task_id)
             if task is not None:
@@ -140,12 +200,21 @@ class IngestionService:
                 if task.document_id:
                     self.repository.mark_document_failed(db, document_id=task.document_id, error=str(exc))
                 db.commit()
+                failed_task = self.repository.get_indexing_task(db, task_id)
+                self._publish_task_event(
+                    task_id,
+                    event="task_failed",
+                    stage="failed",
+                    message=f"索引失败：{exc}",
+                    task=self._to_task_payload(failed_task),
+                )
         finally:
             db.close()
 
     def persist_upload(self, name: str, data: bytes) -> str:
         self.settings.storage_dir.mkdir(parents=True, exist_ok=True)
-        target = self.settings.storage_dir / name
+        safe_name = self._sanitize_filename(name)
+        target = self.settings.storage_dir / safe_name
         target.write_bytes(data)
         return str(target)
 
@@ -157,6 +226,24 @@ class IngestionService:
         if task is None:
             return None
         return IndexingTaskRead.model_validate(task)
+
+    def subscribe_task_events(self, task_id: str) -> Queue[dict[str, object]]:
+        subscriber: Queue[dict[str, object]] = Queue()
+        with self._task_event_lock:
+            self._task_subscribers.setdefault(task_id, []).append(subscriber)
+            history = list(self._task_event_history.get(task_id, ()))
+        for payload in history:
+            subscriber.put(payload)
+        return subscriber
+
+    def unsubscribe_task_events(self, task_id: str, subscriber: Queue[dict[str, object]]) -> None:
+        with self._task_event_lock:
+            subscribers = self._task_subscribers.get(task_id, [])
+            remaining = [item for item in subscribers if item is not subscriber]
+            if remaining:
+                self._task_subscribers[task_id] = remaining
+            else:
+                self._task_subscribers.pop(task_id, None)
 
     def reindex(self, db: Session, document_ids: list[str]) -> ReindexResponse:
         documents = self.repository.get_documents(db, document_ids) if document_ids else self.repository.list_documents(db)
@@ -246,6 +333,19 @@ class IngestionService:
             updated_at=document.updated_at,
         )
 
+    @classmethod
+    def _sanitize_filename(cls, name: str) -> str:
+        original = Path(name or "upload.bin").name.strip()
+        suffix = Path(original).suffix or ".bin"
+        stem = Path(original).stem or "upload"
+        stem = cls._INVALID_FILENAME_CHARS.sub("_", stem).strip(" .")
+        suffix = cls._INVALID_FILENAME_CHARS.sub("_", suffix).strip(" .")
+        if not suffix.startswith("."):
+            suffix = f".{suffix}" if suffix else ".bin"
+        if not stem:
+            stem = "upload"
+        return f"{stem}{suffix}"
+
     def _delete_local_source_file(self, source_path: str) -> None:
         normalized = (source_path or "").strip()
         if not normalized or normalized.startswith("http"):
@@ -263,3 +363,33 @@ class IngestionService:
                 path.unlink()
             except OSError:
                 return
+
+    def _publish_task_event(
+        self,
+        task_id: str,
+        *,
+        event: str,
+        message: str,
+        task: dict[str, object] | None = None,
+        stage: str = "",
+        progress: dict[str, object] | None = None,
+    ) -> None:
+        payload = {
+            "event": event,
+            "message": message,
+            "stage": stage,
+            "task": task or {},
+            "progress": progress or {},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._task_event_lock:
+            history = self._task_event_history.setdefault(task_id, deque(maxlen=24))
+            history.append(payload)
+            for subscriber in list(self._task_subscribers.get(task_id, [])):
+                subscriber.put(payload)
+
+    @staticmethod
+    def _to_task_payload(task) -> dict[str, object]:
+        if task is None:
+            return {}
+        return IndexingTaskRead.model_validate(task).model_dump(mode="json")
